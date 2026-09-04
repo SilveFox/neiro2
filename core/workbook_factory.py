@@ -268,3 +268,33 @@ def activate_year_month(year_month: str) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Нет файла для месяца {year_month}")
     return set_active_workbook(path, year_month)
+
+
+def ensure_month_workbook(year: int, month: int, activate: bool = True) -> tuple[Path, bool]:
+    """
+    Return the monthly workbook path, creating an empty month if the file is missing.
+
+    Returns (path, created). When activate=True the book becomes the active one.
+    """
+    dest = month_workbook_path(year, month)
+    year_month = f"{year:04d}-{month:02d}"
+    if dest.exists():
+        if activate:
+            set_active_workbook(dest, year_month)
+        return dest.resolve(), False
+    try:
+        path = create_month_workbook(year, month, activate=activate)
+        return path, True
+    except WorkbookExistsError:
+        if activate:
+            set_active_workbook(dest, year_month)
+        return dest.resolve(), False
+
+
+def workbook_for_report_date(report_date: str, activate: bool = True) -> tuple[Path, bool]:
+    """Pick / create SE_Lukhovitsy_YYYY-MM.xlsx from report_date (YYYY-MM-DD)."""
+    try:
+        dt = date.fromisoformat(report_date[:10])
+    except ValueError as exc:
+        raise ValueError(f"Некорректная report_date: {report_date}") from exc
+    return ensure_month_workbook(dt.year, dt.month, activate=activate)

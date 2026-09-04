@@ -31,6 +31,7 @@
   const priceStatus = $("priceStatus");
   const aliasBody = $("aliasBody");
   const aliasStatus = $("aliasStatus");
+  const aliasSearch = $("aliasSearch");
   const employeesEditor = $("employeesEditor");
   const employeesStatus = $("employeesStatus");
   const modelInfo = $("modelInfo");
@@ -423,8 +424,12 @@
         log(`Пропуск дубликата (${elapsed}): ${data.message}`);
       } else {
         log(
-          `Excel обновлён за ${elapsed}. Лист ${data.day_sheet}, сумма ${data.grand_total}`
+          `Excel обновлён за ${elapsed}. Книга ${data.year_month || ""}${data.workbook_created ? " (создана)" : ""} лист ${data.day_sheet}, сумма ${data.grand_total}`
         );
+        if (data.workbook_created) {
+          log(`Создан и активирован месяц ${data.year_month}`);
+        }
+        await refreshWorkbooks();
         const li = document.createElement("li");
         li.innerHTML = `<span>${escapeHtml(report.report_date)}</span><span>Запись на лист ${escapeHtml(String(data.day_sheet))}</span><span class="tag">готово</span>`;
         if (sessionHistory.querySelector(".muted")) sessionHistory.innerHTML = "";
@@ -757,20 +762,71 @@
       }
       aliasesDoc = data;
       renderAliases();
-      aliasStatus.textContent = `Записей: ${(data.aliases || []).length}`;
     } catch (e) {
       aliasStatus.textContent = e.message;
     }
   }
 
-  function renderAliases() {
-    aliasBody.innerHTML = "";
-    const list = aliasesDoc.aliases || [];
-    if (!list.length) {
-      aliasBody.innerHTML = `<tr class="empty-row"><td colspan="3">Нет алиасов</td></tr>`;
+  function parseSynonymsField(value) {
+    return String(value || "")
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  function syncVisibleAliases() {
+    if (!aliasesDoc.aliases) aliasesDoc.aliases = [];
+    aliasBody.querySelectorAll("tr[data-idx]").forEach((tr) => {
+      const i = Number(tr.dataset.idx);
+      if (!aliasesDoc.aliases[i]) return;
+      aliasesDoc.aliases[i].official = tr.querySelector('[data-f="official"]').value;
+      aliasesDoc.aliases[i].synonyms = parseSynonymsField(
+        tr.querySelector('[data-f="synonyms"]').value
+      );
+    });
+  }
+
+  function aliasMatchesQuery(block, q) {
+    if (!q) return true;
+    const official = (block.official || "").toLowerCase();
+    if (official.includes(q)) return true;
+    return (block.synonyms || []).some((s) => String(s).toLowerCase().includes(q));
+  }
+
+  function updateAliasStatus(shown, total) {
+    if (!total) {
+      aliasStatus.textContent = "Записей: 0";
       return;
     }
+    const q = (aliasSearch.value || "").trim();
+    aliasStatus.textContent = q
+      ? `Показано ${shown} из ${total}`
+      : `Записей: ${total}`;
+  }
+
+  function renderAliases() {
+    syncVisibleAliases();
+    aliasBody.innerHTML = "";
+    const list = aliasesDoc.aliases || [];
+    const q = (aliasSearch.value || "").trim().toLowerCase();
+    const visible = [];
     list.forEach((block, idx) => {
+      if (aliasMatchesQuery(block, q)) visible.push(idx);
+    });
+
+    if (!list.length) {
+      aliasBody.innerHTML = `<tr class="empty-row"><td colspan="3">Нет алиасов</td></tr>`;
+      updateAliasStatus(0, 0);
+      return;
+    }
+    if (!visible.length) {
+      aliasBody.innerHTML = `<tr class="empty-row"><td colspan="3">Ничего не найдено. Измените запрос или очистите поиск.</td></tr>`;
+      updateAliasStatus(0, list.length);
+      return;
+    }
+
+    for (const idx of visible) {
+      const block = list[idx];
       const tr = document.createElement("tr");
       tr.dataset.idx = String(idx);
       const syn = (block.synonyms || []).join("; ");
@@ -779,23 +835,23 @@
         <td><textarea data-f="synonyms" rows="2">${escapeHtml(syn)}</textarea></td>
         <td><button type="button" class="btn danger">✕</button></td>`;
       tr.querySelector(".btn.danger").addEventListener("click", () => {
+        syncVisibleAliases();
         aliasesDoc.aliases.splice(idx, 1);
         renderAliases();
       });
       aliasBody.appendChild(tr);
-    });
+    }
+    updateAliasStatus(visible.length, list.length);
   }
 
   function collectAliases() {
-    return [...aliasBody.querySelectorAll("tr[data-idx]")].map((tr) => {
-      const official = tr.querySelector('[data-f="official"]').value.trim();
-      const synonyms = tr
-        .querySelector('[data-f="synonyms"]')
-        .value.split(";")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      return { official, synonyms };
-    }).filter((x) => x.official);
+    syncVisibleAliases();
+    return (aliasesDoc.aliases || [])
+      .map((block) => ({
+        official: String(block.official || "").trim(),
+        synonyms: (block.synonyms || []).map((s) => String(s).trim()).filter(Boolean),
+      }))
+      .filter((x) => x.official);
   }
 
   async function saveAliases() {
@@ -813,7 +869,11 @@
       }
       aliasesDoc = data;
       renderAliases();
-      aliasStatus.textContent = `Сохранено: ${(data.aliases || []).length}`;
+      const total = (data.aliases || []).length;
+      const q = (aliasSearch.value || "").trim();
+      aliasStatus.textContent = q
+        ? `Сохранено: ${total}. Показано с учётом поиска.`
+        : `Сохранено: ${total}`;
       log("Алиасы сохранены");
     } catch (e) {
       aliasStatus.textContent = e.message;
@@ -821,11 +881,16 @@
   }
 
   $("btnAliasAdd").addEventListener("click", () => {
+    syncVisibleAliases();
     if (!aliasesDoc.aliases) aliasesDoc.aliases = [];
     aliasesDoc.aliases.push({ official: "", synonyms: [] });
+    aliasSearch.value = "";
     renderAliases();
+    const last = aliasBody.querySelector("tr:last-child input[data-f='official']");
+    if (last) last.focus();
   });
   $("btnAliasSave").addEventListener("click", saveAliases);
+  aliasSearch.addEventListener("input", renderAliases);
 
   /* -------- excel log -------- */
   async function loadExcelLog() {

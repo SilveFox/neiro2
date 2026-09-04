@@ -2,8 +2,8 @@
 """
 Append report data into SE_Lukhovitsy day sheets (01..31).
 
-Writes into the active monthly workbook under data/workbooks/
-(never creating a new file per report).
+Writes into the monthly workbook that matches report_date (YYYY-MM).
+If that file does not exist, an empty month is created and activated.
 
 Brigade = one block:
   C = ФИО участников (по одному в строке, сверху блока)
@@ -27,7 +27,13 @@ import openpyxl
 
 from core import config
 from core.pricing import CalcResult, WorkerCalc
-from core.workbook_factory import get_active_workbook, sanitize_workbook, written_log_for
+from core.workbook_factory import (
+    get_active_workbook,
+    sanitize_workbook,
+    workbook_for_report_date,
+    written_log_for,
+    year_month_from_path,
+)
 
 
 def ensure_working_workbook() -> Path:
@@ -192,9 +198,16 @@ def append_calc_to_workbook(
     workbook_path: Path | None = None,
     skip_duplicates: bool = True,
 ) -> dict[str, Any]:
-    path = workbook_path or ensure_working_workbook()
     if not calc.report_date:
         raise ValueError("Для записи в Excel нужна report_date")
+
+    created = False
+    if workbook_path is None:
+        path, created = workbook_for_report_date(calc.report_date, activate=True)
+    else:
+        path = Path(workbook_path)
+
+    year_month = year_month_from_path(path)
 
     report_id = f"{calc.report_date}:{calc.source_text_hash or ''}"
     written = _load_written(path)
@@ -203,6 +216,9 @@ def append_calc_to_workbook(
             "ok": False,
             "duplicate": True,
             "report_id": report_id,
+            "workbook": str(path),
+            "year_month": year_month,
+            "workbook_created": created,
             "message": "Этот отчёт уже был записан в Excel",
         }
 
@@ -285,6 +301,8 @@ def append_calc_to_workbook(
         "duplicate": False,
         "report_id": report_id,
         "workbook": str(path),
+        "year_month": year_month,
+        "workbook_created": created,
         "day_sheet": day_name,
         "blocks": blocks_written,
         "unmatched_jobs": unmatched_jobs,

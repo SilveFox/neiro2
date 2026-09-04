@@ -30,7 +30,6 @@ def calculate_only(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_excel(calc_dict: dict[str, Any] | CalcResult, skip_duplicates: bool = True) -> dict[str, Any]:
-    ensure_working_workbook()
     if isinstance(calc_dict, CalcResult):
         calc = calc_dict
     else:

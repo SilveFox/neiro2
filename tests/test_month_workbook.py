@@ -92,6 +92,63 @@ class MonthWorkbookTests(unittest.TestCase):
                 config.WORKBOOKS_DIR = old_dir
                 config.ACTIVE_WORKBOOK_META = old_meta
 
+    def test_ensure_creates_missing_month_and_write_uses_report_date(self):
+        """Write goes to YYYY-MM of report_date, not the previously active book."""
+        self.assertTrue(config.SOURCE_WORKBOOK.exists())
+        from core.excel_writer import append_calc_to_workbook
+        from core.pricing import calculate_report
+        from core.workbook_factory import (
+            ensure_month_workbook,
+            get_active_meta,
+            month_workbook_path,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            old_dir = config.WORKBOOKS_DIR
+            old_meta = config.ACTIVE_WORKBOOK_META
+            config.WORKBOOKS_DIR = tmp_path / "workbooks"
+            config.WORKBOOKS_DIR.mkdir()
+            config.ACTIVE_WORKBOOK_META = tmp_path / "active_workbook.json"
+            try:
+                july, created_july = ensure_month_workbook(2026, 7, activate=True)
+                self.assertTrue(created_july)
+                self.assertTrue(july.exists())
+                self.assertEqual(get_active_meta()["year_month"], "2026-07")
+
+                report = {
+                    "report_date": "2026-08-10",
+                    "source_text_hash": "month-by-date-hash",
+                    "workers": [
+                        {
+                            "raw_worker_name": "Карандак В.Е.",
+                            "members": ["Карандак В.Е."],
+                            "performed_jobs": [
+                                {
+                                    "raw_task_name": "обжим рж45",
+                                    "job_description": "обжим рж45",
+                                    "service_type": "Интернет",
+                                    "volume": 1,
+                                    "unit": "шт",
+                                }
+                            ],
+                        }
+                    ],
+                }
+                calc = calculate_report(report)
+                result = append_calc_to_workbook(calc, skip_duplicates=True)
+                self.assertTrue(result["ok"])
+                self.assertTrue(result["workbook_created"])
+                self.assertEqual(result["year_month"], "2026-08")
+                self.assertEqual(result["day_sheet"], "10")
+                aug = month_workbook_path(2026, 8)
+                self.assertTrue(aug.exists())
+                self.assertEqual(get_active_meta()["year_month"], "2026-08")
+                self.assertNotEqual(Path(result["workbook"]).resolve(), july.resolve())
+            finally:
+                config.WORKBOOKS_DIR = old_dir
+                config.ACTIVE_WORKBOOK_META = old_meta
+
     def test_sanitize_drops_external_names(self):
         self.assertTrue(config.SOURCE_WORKBOOK.exists())
         wb = openpyxl.load_workbook(config.SOURCE_WORKBOOK)
