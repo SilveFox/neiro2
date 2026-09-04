@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>МонтажПро — отчёты и расчёт ЗП</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="#report" data-nav="report">
+      <svg class="logo-icon" viewBox="0 0 40 40" aria-hidden="true">
+        <circle cx="20" cy="12" r="4.5" fill="currentColor"/>
+        <path d="M20 16.5v12" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+        <path d="M12 14c-3.2 2.2-5.2 5.6-5.2 9.5 0 .5.4.9.9.9h.2c.4 0 .8-.3.9-.7C9.4 20.4 12.2 17.5 16 16.2c.5-.2.8-.7.6-1.2-.2-.5-.7-.8-1.2-.6C14.5 14.6 13.2 14.3 12 14z" fill="currentColor"/>
+        <path d="M28 14c3.2 2.2 5.2 5.6 5.2 9.5 0 .5-.4.9-.9.9h-.2c-.4 0-.8-.3-.9-.7C30.6 20.4 27.8 17.5 24 16.2c-.5-.2-.8-.7-.6-1.2.2-.5.7-.8 1.2-.6.9.2 2.2.5 3.4.6z" fill="currentColor"/>
+        <path d="M8 34h24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>
+      <span>МонтажПро</span>
+    </a>
+    <nav class="main-nav" aria-label="Разделы">
+      <button type="button" class="nav-link active" data-nav="report">Отчёт</button>
+      <button type="button" class="nav-link" data-nav="price">Прайс</button>
+      <button type="button" class="nav-link" data-nav="aliases">Алиасы работ</button>
+      <button type="button" class="nav-link" data-nav="settings">Настройки</button>
+      <button type="button" class="nav-link" data-nav="excel-log">Лог Excel</button>
+    </nav>
+  </header>
+
+  <div class="app">
+    <!-- ОТЧЁТ -->
+    <section class="view active" id="view-report">
+      <ol class="stepper" aria-label="Этапы">
+        <li class="step active" data-step="1"><span class="step-num">1</span> Загрузка данных</li>
+        <li class="step" data-step="2"><span class="step-num">2</span> Распознавание работ</li>
+        <li class="step" data-step="3"><span class="step-num">3</span> Расчёт ЗП</li>
+        <li class="step" data-step="4"><span class="step-num">4</span> Формирование отчёта</li>
+      </ol>
+
+      <div class="report-layout">
+        <div class="report-input">
+          <h1>Новый отчёт</h1>
+          <div class="field-row">
+            <label class="field">
+              <span>Дата отчёта</span>
+              <input type="date" id="reportDate" />
+            </label>
+          </div>
+
+          <div class="dropzone" id="dropzone" tabindex="0">
+            <input type="file" id="fileInput" accept=".txt,.doc,.docx,.xls,.xlsx,.csv" hidden />
+            <svg class="drop-icon" viewBox="0 0 48 48" aria-hidden="true">
+              <path d="M24 8v22M24 8l-7 7M24 8l7 7M10 36h28" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <p class="drop-title">Перетащите файл сюда</p>
+            <p class="drop-hint">.txt, .doc, .docx, .xls, .xlsx</p>
+          </div>
+
+          <div class="btn-row">
+            <button type="button" class="btn primary" id="btnSelectFile">Выбрать файл</button>
+            <button type="button" class="btn outline" id="btnPaste">Вставить из буфера</button>
+          </div>
+
+          <label class="field">
+            <span>Или вставьте текст отчёта</span>
+            <textarea id="reportText" rows="8" placeholder="ФИО и объёмы работ..."></textarea>
+          </label>
+
+          <label class="field">
+            <span>Доп. инструкция для ИИ (необязательно)</span>
+            <textarea id="extraPrompt" rows="2" placeholder="Например: имена писать как в штатном списке"></textarea>
+          </label>
+
+          <div class="btn-row">
+            <button type="button" class="btn primary" id="btnParse">Разобрать через ИИ</button>
+            <span id="status" class="status" hidden>
+              <span class="spinner"></span>
+              <span id="statusText">Обработка... 00:00</span>
+            </span>
+          </div>
+        </div>
+
+        <aside class="preview-card">
+          <div class="preview-head">
+            <h2>Предпросмотр расчёта</h2>
+            <p class="preview-meta" id="previewMeta">Нет данных — загрузите отчёт</p>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="previewTable">
+              <thead>
+                <tr>
+                  <th>ФИО</th>
+                  <th>Наименование работы</th>
+                  <th>Кол-во</th>
+                  <th>Тариф</th>
+                  <th>ЗП</th>
+                </tr>
+              </thead>
+              <tbody id="previewBody">
+                <tr class="empty-row"><td colspan="5">Таблица заполнится после распознавания</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="preview-foot">
+            <div class="preview-total" id="previewTotal"></div>
+            <div class="btn-row">
+              <button type="button" class="btn primary" id="btnExcel" disabled>Формировать отчёт</button>
+              <button type="button" class="btn outline" id="btnCancelPreview">Отмена</button>
+            </div>
+          </div>
+          <details class="json-details">
+            <summary>JSON от нейросети (можно править)</summary>
+            <textarea id="jsonEditor" rows="10" spellcheck="false"></textarea>
+            <div class="btn-row">
+              <button type="button" class="btn outline" id="btnCalc">Пересчитать по прайсу</button>
+            </div>
+          </details>
+        </aside>
+      </div>
+
+      <div class="bottom-panel">
+        <div class="subtabs">
+          <button type="button" class="subtab active" data-subtab="problems">Проблемные работы</button>
+          <button type="button" class="subtab" data-subtab="history">История записей в Excel</button>
+        </div>
+        <div class="subtab-panels">
+          <div class="subpanel active" id="sub-problems">
+            <ul class="problem-list" id="problemList">
+              <li class="muted">Пока нет проблемных работ</li>
+            </ul>
+          </div>
+          <div class="subpanel" id="sub-history">
+            <ul class="history-list" id="sessionHistory">
+              <li class="muted">История сессии появится здесь</li>
+            </ul>
+            <pre id="logOut" class="session-log" hidden></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ПРАЙС -->
+    <section class="view" id="view-price">
+      <div class="view-head">
+        <div>
+          <h1>Прайс</h1>
+          <p class="lead">Текущий прайс-лист. Изменения сохраняются в <code>data/price_list.json</code>.</p>
+        </div>
+        <div class="btn-row">
+          <input type="search" id="priceSearch" class="search" placeholder="Поиск по наименованию..." />
+          <button type="button" class="btn outline" id="btnPriceAdd">Добавить строку</button>
+          <button type="button" class="btn primary" id="btnPriceSave">Сохранить</button>
+        </div>
+      </div>
+      <div class="table-wrap full">
+        <table class="data-table editable" id="priceTable">
+          <thead>
+            <tr>
+              <th style="width:3rem">№</th>
+              <th>Наименование</th>
+              <th style="width:7rem">Цена</th>
+              <th style="width:6rem">Ед.</th>
+              <th style="width:8rem">Тип</th>
+              <th style="width:4rem"></th>
+            </tr>
+          </thead>
+          <tbody id="priceBody"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="priceStatus"></p>
+    </section>
+
+    <!-- АЛИАСЫ -->
+    <section class="view" id="view-aliases">
+      <div class="view-head">
+        <div>
+          <h1>Алиасы работ</h1>
+          <p class="lead">Синонимы из отчётов → официальное имя из прайса.</p>
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn outline" id="btnAliasAdd">Добавить</button>
+          <button type="button" class="btn primary" id="btnAliasSave">Сохранить</button>
+        </div>
+      </div>
+      <div class="table-wrap full">
+        <table class="data-table editable" id="aliasTable">
+          <thead>
+            <tr>
+              <th>Официальное наименование</th>
+              <th>Синонимы (через ; )</th>
+              <th style="width:4rem"></th>
+            </tr>
+          </thead>
+          <tbody id="aliasBody"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="aliasStatus"></p>
+    </section>
+
+    <!-- НАСТРОЙКИ -->
+    <section class="view" id="view-settings">
+      <div class="view-head">
+        <div>
+          <h1>Настройки</h1>
+          <p class="lead" id="activeWorkbookLabel">Активная книга: —</p>
+        </div>
+      </div>
+      <div class="settings-grid">
+        <div class="settings-block">
+          <h2>Месяц Excel</h2>
+          <div class="field-row wrap">
+            <label class="field">
+              <span>Новый месяц</span>
+              <input type="month" id="newMonth" />
+            </label>
+            <button type="button" class="btn primary" id="btnNewMonth">Создать пустой месяц</button>
+          </div>
+          <div class="field-row wrap">
+            <label class="field grow">
+              <span>Существующие</span>
+              <select id="monthSelect"></select>
+            </label>
+            <button type="button" class="btn outline" id="btnActivateMonth">Сделать активным</button>
+            <a class="btn outline" id="btnDownload" href="/api/download-excel">Скачать Excel</a>
+          </div>
+        </div>
+        <div class="settings-block">
+          <h2>Сотрудники</h2>
+          <p class="hint">По одному ФИО на строку — используются в промпте ИИ.</p>
+          <textarea id="employeesEditor" rows="12"></textarea>
+          <div class="btn-row">
+            <button type="button" class="btn primary" id="btnEmployeesSave">Сохранить сотрудников</button>
+          </div>
+          <p class="hint" id="employeesStatus"></p>
+        </div>
+        <div class="settings-block">
+          <h2>Модель</h2>
+          <p class="hint" id="modelInfo">—</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ЛОГ EXCEL -->
+    <section class="view" id="view-excel-log">
+      <div class="view-head">
+        <div>
+          <h1>Лог Excel</h1>
+          <p class="lead">Записи, добавленные в активную книгу.</p>
+        </div>
+        <button type="button" class="btn outline" id="btnRefreshLog">Обновить</button>
+      </div>
+      <div class="table-wrap full">
+        <table class="data-table" id="excelLogTable">
+          <thead>
+            <tr>
+              <th>Дата</th>
+              <th>Лист</th>
+              <th>Сумма</th>
+              <th>Не найдено</th>
+              <th>Записано</th>
+              <th>ID</th>
+            </tr>
+          </thead>
+          <tbody id="excelLogBody">
+            <tr class="empty-row"><td colspan="6">Нет записей</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

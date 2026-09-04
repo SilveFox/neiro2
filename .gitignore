@@ -1,0 +1,28 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Runtime Excel books and write logs (local operator data)
+data/workbooks/*.xlsx
+data/workbooks/*.written.json
+data/active_workbook.json
+data/workbook.xlsx
+data/written_reports.json
+
+# Optional JSON dumps of parsed reports
+reports_json/
+
+# Logs
+*.log
