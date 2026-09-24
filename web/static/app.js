@@ -140,6 +140,13 @@
     });
   });
 
+  document.querySelectorAll("[data-help-anchor]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const target = document.getElementById(el.dataset.helpAnchor);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+
   document.querySelectorAll(".subtab").forEach((tab) => {
     tab.addEventListener("click", () => {
       document.querySelectorAll(".subtab").forEach((t) => t.classList.remove("active"));
@@ -938,7 +945,7 @@
   });
 
   const initial = (location.hash || "#report").replace("#", "") || "report";
-  showView(["report", "price", "aliases", "settings", "excel-log"].includes(initial) ? initial : "report");
+  showView(["report", "price", "aliases", "settings", "excel-log", "help"].includes(initial) ? initial : "report");
   refreshWorkbooks();
   setStep(1);
   log("Готово. Загрузите отчёт или вставьте текст.");

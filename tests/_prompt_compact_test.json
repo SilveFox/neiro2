@@ -1,0 +1,130 @@
+{
+  "sizes": {
+    "full": 6128,
+    "compact": 1543,
+    "ratio": 3.97
+  },
+  "sample": "Слободянюк, Чуприков\n1 заявка по неисправности интернета\nСНТ победа 255\n3 выкладки запаса кабеля\n2 муфты монтаж\nПерекидка кабеля между зданиями 30 м\n19 сварок 1-7\n2 обжима рж 45\n",
+  "runs": [
+    {
+      "ok": true,
+      "workers": 1,
+      "members": [
+        "Слободянюк А.М.",
+        "Чуприков А.А."
+      ],
+      "jobs_count": 6,
+      "jobs": [
+        {
+          "name": "1 заявка по неисправности интернета",
+          "volume": 1,
+          "unit": "шт",
+          "service_type": "Интернет"
+        },
+        {
+          "name": "выкладки запаса кабеля",
+          "volume": 3,
+          "unit": "шт",
+          "service_type": "Общее"
+        },
+        {
+          "name": "муфты монтаж",
+          "volume": 2,
+          "unit": "шт",
+          "service_type": "Общее"
+        },
+        {
+          "name": "Перекидка кабеля между зданиями",
+          "volume": 30,
+          "unit": "м",
+          "service_type": "Общее"
+        },
+        {
+          "name": "сварок 1-7",
+          "volume": 19,
+          "unit": "шт",
+          "service_type": "Общее"
+        },
+        {
+          "name": "обжима рж 45",
+          "volume": 2,
+          "unit": "шт",
+          "service_type": "Общее"
+        }
+      ],
+      "raw_preview": "{\n    \"workers\": [\n        {\n            \"raw_worker_name\": \"Слободянюк А.М. Чуприков А.А.\",\n            \"members\": [\n                \"Слободянюк А.М.\",\n                \"Чуприков А.А.\"\n            ],\n            \"performed_jobs\": [\n                {\n                    \"raw_task_name\": \"1 заявка по неисправности интернета\",\n                    \"job_description\": \"1 заявка по неисправности интернета\",\n                    \"service_type\": \"Интернет\",\n                    \"volume\": 1,\n                    \"unit\": \"шт\"\n                },\n                {\n                    \"raw_task_name\": \"3 выкладки запаса кабеля\",\n                    \"job_description\": \"3 выкладки запаса кабеля\",\n                    \"service_type\": \"Общее\",\n                    \"volume\": 3,\n                    \"unit\": \"шт\"\n  ",
+      "elapsed_sec": 4.58,
+      "prompt_chars": 1543,
+      "label": "compact",
+      "quality": {
+        "brigade_ok": true,
+        "enough_jobs": true,
+        "volumes_hit": [
+          2,
+          3,
+          19,
+          30
+        ],
+        "has_19": true,
+        "has_30m": true
+      }
+    },
+    {
+      "ok": true,
+      "workers": 1,
+      "members": [
+        "Слободянюк А.М.",
+        "Чуприков А.А."
+      ],
+      "jobs_count": 5,
+      "jobs": [
+        {
+          "name": "Выкладка запаса кабеля",
+          "volume": 3,
+          "unit": "шт",
+          "service_type": "Общее"
+        },
+        {
+          "name": "Муфта монтаж",
+          "volume": 2,
+          "unit": "шт",
+          "service_type": "Общее"
+        },
+        {
+          "name": "Перекидка кабеля между зданиями",
+          "volume": 30,
+          "unit": "м",
+          "service_type": "Общее"
+        },
+        {
+          "name": "Сварка 1-7",
+          "volume": 19,
+          "unit": "шт",
+          "service_type": "Общее"
+        },
+        {
+          "name": "Обжим рж 45",
+          "volume": 2,
+          "unit": "шт",
+          "service_type": "Общее"
+        }
+      ],
+      "raw_preview": "{\n  \"report_date\": null,\n  \"workers\": [\n    {\n      \"raw_worker_name\": \"Слободянюк, Чуприков\",\n      \"members\": [\"Слободянюк А.М.\", \"Чуприков А.А.\"],\n      \"performed_jobs\": [\n        {\n          \"raw_task_name\": \"Выкладка запаса кабеля\",\n          \"job_description\": \"Выкладка запаса кабеля\",\n          \"service_type\": \"Общее\",\n          \"volume\": 3,\n          \"unit\": \"шт\"\n        },\n        {\n          \"raw_task_name\": \"Муфта монтаж\",\n          \"job_description\": \"Муфта монтаж\",\n          \"service_type\": \"Общее\",\n          \"volume\": 2,\n          \"unit\": \"шт\"\n        },\n        {\n          \"raw_task_name\": \"Перекидка кабеля между зданиями\",\n          \"job_description\": \"Перекидка кабеля между зданиями\",\n          \"service_type\": \"Общее\",\n          \"volume\": 30,\n          \"unit\": \"м\"\n       ",
+      "elapsed_sec": 3.72,
+      "prompt_chars": 6128,
+      "label": "full",
+      "quality": {
+        "brigade_ok": true,
+        "enough_jobs": true,
+        "volumes_hit": [
+          2,
+          3,
+          19,
+          30
+        ],
+        "has_19": true,
+        "has_30m": true
+      }
+    }
+  ]
+}

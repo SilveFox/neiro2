@@ -27,8 +27,12 @@ SHEET_TEMPLATE = "Шаблон"
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
-MODEL_NAME = "qwen2.5:7b"
+# CPU-only сервер: 3b (~2 GB) — баланс скорость/качество JSON+русский.
+# Слабый CPU: qwen2.5:1.5b. Есть GPU: можно вернуть qwen2.5:7b.
+MODEL_NAME = "qwen2.5:3b"
 OLLAMA_TIMEOUT_SEC = 180
+# False = compact prompt (~1/4); True = archived full prompt in prompt_full.py
+USE_FULL_PROMPT = False
 
 # Данные!B:C — VLOOKUP прайса (новое)
 PRICE_NAME_COL = 2  # B
