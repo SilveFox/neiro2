@@ -244,6 +244,12 @@ def create_month_workbook(
         _reset_day_sheets(wb, year, month)
         if config.SHEET_CALC in wb.sheetnames:
             _update_calc_dates(wb[config.SHEET_CALC], year, month)
+        try:
+            wb.calculation.calcMode = "auto"
+            wb.calculation.fullCalcOnLoad = True
+            wb.calculation.forceFullCalc = True
+        except Exception:
+            pass
         wb.save(dest)
     finally:
         wb.close()

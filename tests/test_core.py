@@ -403,6 +403,60 @@ class ExcelTests(unittest.TestCase):
             r2 = append_calc_to_workbook(calc, workbook_path=wb_path, skip_duplicates=True)
             self.assertTrue(r2.get("duplicate"))
 
+    def test_append_writes_numeric_wages_keeps_other_sumif(self):
+        """После записи G/H/I — числа (как в UI); чужие SUMIF в L не затираются нулём."""
+        import openpyxl
+
+        src = config.SOURCE_WORKBOOK
+        self.assertTrue(src.exists())
+        with tempfile.TemporaryDirectory() as tmp:
+            wb_path = Path(tmp) / "test.xlsx"
+            shutil.copy2(src, wb_path)
+            from core.workbook_factory import written_log_for
+
+            written_log_for(wb_path).write_text('{"entries":[]}', encoding="utf-8")
+
+            wb0 = openpyxl.load_workbook(wb_path)
+            day0 = wb0["15"]
+            # Запомним формулу L у сотрудника, которого нет в SAMPLE_REPORT
+            preserved_coord = None
+            preserved_formula = None
+            for r in range(config.SUM_PEOPLE_START_ROW, config.SUM_PEOPLE_END_ROW + 1):
+                name = str(day0.cell(r, config.COL_PEOPLE_SUM_NAME).value or "").strip()
+                val = day0.cell(r, config.COL_PEOPLE_SUM_WAGE).value
+                if name and isinstance(val, str) and val.startswith("=") and "Иванов" not in name:
+                    preserved_coord = (r, config.COL_PEOPLE_SUM_WAGE)
+                    preserved_formula = val
+                    break
+            wb0.close()
+
+            calc = calculate_report(SAMPLE_REPORT)
+            self.assertGreater(calc.grand_total, 0)
+            result = append_calc_to_workbook(calc, workbook_path=wb_path, skip_duplicates=True)
+            self.assertTrue(result["ok"])
+
+            wb = openpyxl.load_workbook(wb_path, data_only=False)
+            ws = wb["15"]
+            # Блок пишется в конец листа — проверяем строки из result
+            found_numeric = False
+            for block in result.get("blocks") or []:
+                rows = block.get("rows") or [1, 1]
+                start, end = int(rows[0]), int(rows[1])
+                for r in range(start, end + 1):
+                    g, h, i = ws.cell(r, 7).value, ws.cell(r, 8).value, ws.cell(r, 9).value
+                    if isinstance(g, (int, float)) and isinstance(h, (int, float)) and h > 0:
+                        found_numeric = True
+                        self.assertIsInstance(i, (int, float))
+                        break
+                if found_numeric:
+                    break
+            self.assertTrue(found_numeric, "ожидались числовые тариф/ЗП на дневном листе")
+
+            if preserved_coord and preserved_formula:
+                r, c = preserved_coord
+                self.assertEqual(ws.cell(r, c).value, preserved_formula)
+            wb.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,11 +9,11 @@ Brigade = one block:
   C = ФИО участников (по одному в строке, сверху блока)
   D = наименование работы (общий список один раз)
   E = volume, F = unit
-  G = VLOOKUP tariff, H = G*E
-  I = H / N  (ЗП 1 сотруднику — деление поровну на бригаду)
+  G/H/I = тариф, ЗП, ЗП на человека — числа из расчёта UI
+    (формулы после save в openpyxl теряют кэш и в Excel выглядят пустыми)
 
-Для наработки K:L (SUMIF по C) после работ пишется строка на каждого
-участника с I = сумма блока / N.
+Для наработки K:L обновляются только участники текущего отчёта
+(суммы накапливаются; чужие SUMIF/значения не затираются нулями).
 """
 from __future__ import annotations
 
@@ -103,11 +103,23 @@ def _set_date(ws, report_date: str) -> None:
         ws.cell(*config.DAY_DATE_CELL).value = report_date
 
 
+def _ensure_calc_on_load(wb: openpyxl.Workbook) -> None:
+    """Ask Excel to recalculate formulas on open (openpyxl clears cached results on save)."""
+    try:
+        calc = wb.calculation
+        calc.calcMode = "auto"
+        calc.fullCalcOnLoad = True
+        calc.forceFullCalc = True
+    except Exception:
+        pass
+
+
 def _atomic_save(wb: openpyxl.Workbook, path: Path) -> None:
     """Save workbook via temp file. Closes wb to release Windows file locks."""
     import os
 
     sanitize_workbook(wb)
+    _ensure_calc_on_load(wb)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(suffix=".xlsx", dir=str(path.parent))
     os.close(fd)
@@ -135,7 +147,10 @@ def _write_worker_block(
     """
     One Excel block per brigade (or solo worker).
 
-    ФИО бригады — в первой строке блока в C; работы по строкам; I = H/N (поровну).
+    ФИО бригады — в первой строке блока в C; работы по строкам.
+    G/H/I — числа из расчёта UI (чтобы в файле сразу были суммы без пересчёта Excel),
+    плюс формулы VLOOKUP/произведения — на случай ручного изменения объёма в Excel
+    они не пишутся: openpyxl при сохранении сбрасывает кэш, и ячейки выглядят пустыми.
     """
     members = [m for m in (worker.members or []) if m] or [worker.raw_worker_name]
     n_people = max(1, len(members))
@@ -155,6 +170,7 @@ def _write_worker_block(
     data_start = r
     filled = 0
     block_rows = max(len(jobs), 1)
+    block_wage = 0.0
 
     for i in range(block_rows):
         # ФИО только в первой строке блока (в виде списка через запятую)
@@ -174,23 +190,58 @@ def _write_worker_block(
                 work_name = f"{base} (не найдено в прайсе)"
             ws.cell(r, config.COL_WORK).value = work_name
 
-            ws.cell(r, config.COL_QTY).value = float(job.volume)
+            volume = float(job.volume or 0)
+            ws.cell(r, config.COL_QTY).value = volume
             ws.cell(r, config.COL_UNIT).value = job.unit or "шт"
-            ws.cell(r, config.COL_TARIFF).value = (
-                f"=IFERROR(VLOOKUP(D{r},Данные!$B$4:$C$355,2,FALSE),0)"
-            )
-            ws.cell(r, config.COL_WAGE).value = f"=G{r}*E{r}"
-            ws.cell(r, config.COL_PER_PERSON).value = f"=IFERROR(H{r}/{n_people},0)"
+
+            # Пишем готовые числа из расчёта (как в предпросмотре UI).
+            # Формулы после openpyxl.save теряют кэш → в Excel «пустые» тариф/ЗП до F9.
+            if job.matched and job.unit_price is not None:
+                tariff = float(job.unit_price)
+                wage = float(job.amount if job.amount is not None else tariff * volume)
+            else:
+                tariff = 0.0
+                wage = 0.0
+            per_person = round(wage / n_people, 2) if n_people else 0.0
+            block_wage += wage
+
+            ws.cell(r, config.COL_TARIFF).value = tariff
+            ws.cell(r, config.COL_WAGE).value = round(wage, 2)
+            ws.cell(r, config.COL_PER_PERSON).value = per_person
         elif filled == 0 and i == 0:
             ws.cell(r, config.COL_NUM).value = 1
             ws.cell(r, config.COL_WORK).value = "(нет сопоставленных работ)"
         r += 1
 
-    data_end = r - 1
     ws.cell(r, config.COL_PEOPLE).value = n_people
     ws.cell(r, config.COL_TARIFF).value = "Итог:"
-    ws.cell(r, config.COL_WAGE).value = f"=SUM(H{data_start}:H{data_end})"
+    # Числовой итог блока (= UI), не формула SUM без кэша
+    total = float(worker.total) if worker.total is not None else round(block_wage, 2)
+    ws.cell(r, config.COL_WAGE).value = round(total, 2)
     return start_row, r, filled
+
+
+def _update_people_sum_column(day_ws, per_person_totals: dict[str, float]) -> None:
+    """
+    Дописать наработку в K:L только по участникам этого отчёта.
+
+    Раньше всем остальным ставили 0 и затирали формулы SUMIF / прошлые суммы —
+    из‑за этого в скачанном Excel «Наработка» и лист «Расчет» выглядели пустыми.
+    """
+    start_row, end_row = config.DAY_PEOPLE_SUM_RANGE
+    for r in range(start_row, end_row + 1):
+        name_cell = day_ws.cell(r, config.COL_PEOPLE_SUM_NAME)
+        wage_cell = day_ws.cell(r, config.COL_PEOPLE_SUM_WAGE)
+        name = str(name_cell.value or "").strip()
+        if not name or name not in per_person_totals:
+            continue
+        add = float(per_person_totals[name])
+        existing = wage_cell.value
+        if isinstance(existing, (int, float)):
+            wage_cell.value = round(float(existing) + add, 2)
+        else:
+            # была формула SUMIF или пусто — фиксируем сумму из расчёта
+            wage_cell.value = round(add, 2)
 
 
 def append_calc_to_workbook(
@@ -256,9 +307,7 @@ def append_calc_to_workbook(
         )
         cursor = end + 2
 
-    # --- НОВЫЙ БЛОК: суммарная выработка по сотрудникам (правый столбец) ---
-
-    # Собираем суммарную выработку по каждому сотруднику
+    # Суммарная выработка по сотрудникам (правый столбец K:L) — только участники отчёта
     per_person_totals: dict[str, float] = {}
     for block in blocks_written:
         members = block.get("members") or []
@@ -269,18 +318,7 @@ def append_calc_to_workbook(
             key = str(m).strip()
             per_person_totals[key] = per_person_totals.get(key, 0.0) + per_person
 
-    # Заполняем правую таблицу ФИО / Наработка по словарю
-    start_row, end_row = config.DAY_PEOPLE_SUM_RANGE
-    for r in range(start_row, end_row + 1):
-        name_cell = day_ws.cell(r, config.COL_PEOPLE_SUM_NAME)
-        wage_cell = day_ws.cell(r, config.COL_PEOPLE_SUM_WAGE)
-        name = str(name_cell.value or "").strip()
-        if not name:
-            continue
-        total = per_person_totals.get(name)
-        wage_cell.value = float(total) if total is not None else 0.0
-
-    # --- КОНЕЦ НОВОГО БЛОКА ---
+    _update_people_sum_column(day_ws, per_person_totals)
 
     _atomic_save(wb, path)
 
