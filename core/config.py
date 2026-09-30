@@ -29,7 +29,9 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
 # CPU-only сервер: 3b (~2 GB) — баланс скорость/качество JSON+русский.
 # Слабый CPU: qwen2.5:1.5b. Есть GPU: можно вернуть qwen2.5:7b.
+# Активная модель может быть переопределена в Настройках (data/model_settings.json).
 MODEL_NAME = "qwen2.5:3b"
+MODEL_SETTINGS_CACHE = DATA_DIR / "model_settings.json"
 OLLAMA_TIMEOUT_SEC = 180
 # False = compact prompt (~1/4); True = archived full prompt in prompt_full.py
 USE_FULL_PROMPT = False

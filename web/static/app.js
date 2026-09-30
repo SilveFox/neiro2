@@ -35,6 +35,11 @@
   const employeesEditor = $("employeesEditor");
   const employeesStatus = $("employeesStatus");
   const modelInfo = $("modelInfo");
+  const modelSelect = $("modelSelect");
+  const modelCustom = $("modelCustom");
+  const modelStatus = $("modelStatus");
+  const btnModelSave = $("btnModelSave");
+  const btnModelRefresh = $("btnModelRefresh");
   const excelLogBody = $("excelLogBody");
 
   let timerId = null;
@@ -128,6 +133,7 @@
       refreshWorkbooks();
       loadEmployees();
       loadHealth();
+      loadModelSettings();
     }
     if (name === "excel-log") loadExcelLog();
     location.hash = name;
@@ -605,9 +611,78 @@
       const res = await fetch("/api/health");
       const data = await res.json();
       if (res.ok) {
-        modelInfo.textContent = `Модель: ${data.model || "—"} · позиций прайса: ${data.price_items ?? "—"}`;
+        modelInfo.textContent = `Текущая модель: ${data.model || "—"} · позиций прайса: ${data.price_items ?? "—"}`;
       }
     } catch (_) { /* ignore */ }
+  }
+
+  function fillModelSelect(options, active) {
+    if (!modelSelect) return;
+    modelSelect.innerHTML = "";
+    (options || []).forEach((opt) => {
+      const o = document.createElement("option");
+      o.value = opt.name;
+      const mark = opt.installed ? "" : " (не скачана)";
+      o.textContent = `${opt.label || opt.name}${mark}`;
+      if (opt.name === active) o.selected = true;
+      modelSelect.appendChild(o);
+    });
+  }
+
+  async function loadModelSettings() {
+    if (!modelSelect) return;
+    try {
+      const res = await fetch("/api/model");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (modelStatus) modelStatus.textContent = data.detail || "Не удалось загрузить список моделей";
+        return;
+      }
+      fillModelSelect(data.options || [], data.model);
+      if (modelCustom) modelCustom.value = "";
+      const ollama = data.ollama_ok ? "Ollama доступна" : "Ollama недоступна или список пуст";
+      modelInfo.textContent = `Текущая модель: ${data.model || "—"} · ${ollama}`;
+      if (modelStatus) {
+        modelStatus.textContent = data.ollama_ok
+          ? "Выберите модель и нажмите «Применить»."
+          : "Ollama не ответила — можно указать имя вручную и применить.";
+      }
+    } catch (e) {
+      if (modelStatus) modelStatus.textContent = e.message;
+    }
+  }
+
+  async function saveModel() {
+    if (!modelStatus) return;
+    const custom = (modelCustom?.value || "").trim();
+    const selected = (modelSelect?.value || "").trim();
+    const model = custom || selected;
+    if (!model) {
+      modelStatus.textContent = "Укажите модель";
+      return;
+    }
+    modelStatus.textContent = "Сохранение…";
+    try {
+      const res = await fetch("/api/model", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        modelStatus.textContent = data.detail || "Ошибка сохранения модели";
+        return;
+      }
+      fillModelSelect(data.options || [], data.model);
+      if (modelCustom) modelCustom.value = "";
+      modelInfo.textContent = `Текущая модель: ${data.model || "—"} · ${
+        data.ollama_ok ? "Ollama доступна" : "Ollama недоступна или список пуст"
+      }`;
+      modelStatus.textContent = data.message || `Применено: ${data.model}`;
+      loadHealth();
+    } catch (e) {
+      modelStatus.textContent = e.message;
+    }
   }
 
   async function loadEmployees() {
@@ -928,6 +1003,8 @@
 
   $("btnRefreshLog").addEventListener("click", loadExcelLog);
   $("btnEmployeesSave").addEventListener("click", saveEmployees);
+  if (btnModelSave) btnModelSave.addEventListener("click", saveModel);
+  if (btnModelRefresh) btnModelRefresh.addEventListener("click", loadModelSettings);
 
   btnParse.addEventListener("click", parseReport);
   btnCalc.addEventListener("click", recalculate);

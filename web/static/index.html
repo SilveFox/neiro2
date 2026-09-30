@@ -239,8 +239,25 @@
           <p class="hint" id="employeesStatus"></p>
         </div>
         <div class="settings-block">
-          <h2>Модель</h2>
+          <h2>Модель ИИ</h2>
           <p class="hint" id="modelInfo">—</p>
+          <div class="field-row wrap">
+            <label class="field grow">
+              <span>Активная модель Ollama</span>
+              <select id="modelSelect"></select>
+            </label>
+            <button type="button" class="btn outline" id="btnModelRefresh">Обновить список</button>
+            <button type="button" class="btn primary" id="btnModelSave">Применить</button>
+          </div>
+          <label class="field">
+            <span>Или введите имя модели вручную</span>
+            <input type="text" id="modelCustom" placeholder="например qwen2.5:3b" autocomplete="off" />
+          </label>
+          <p class="hint">
+            Смена применяется сразу к разбору отчётов. Модель должна быть скачана:
+            <code>ollama pull &lt;имя&gt;</code>. Выбор сохраняется в <code>data/model_settings.json</code>.
+          </p>
+          <p class="hint" id="modelStatus"></p>
         </div>
       </div>
     </section>
@@ -397,8 +414,8 @@
               <li><strong>Новый месяц</strong> — создать пустую книгу на выбранный месяц из шаблона.</li>
               <li><strong>Существующие</strong> — выбрать книгу и «Сделать активным» (для скачивания и лога).</li>
               <li>Запись отчёта всё равно идёт в месяц <em>даты отчёта</em>, даже если активна другая книга.</li>
+              <li><strong>Модель ИИ</strong> — выбор модели Ollama (список + ручной ввод); сохраняется и сразу используется при разборе.</li>
               <li><strong>Сотрудники</strong> — по одному ФИО на строку; список подставляется в промпт ИИ для узнавания фамилий.</li>
-              <li><strong>Модель</strong> — какая модель Ollama настроена и доступна ли служба.</li>
             </ul>
           </section>
 

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from core import config
 from core.excel_writer import append_calc_to_workbook, ensure_working_workbook, get_written_log
+from core.model_settings import get_active_model, model_settings_payload, set_active_model
 from core.parser import ParseError, parse_report_text, validate_report
 from core.pricing import (
     PriceList,
@@ -73,6 +74,10 @@ class AliasesSaveRequest(BaseModel):
 
 class EmployeesSaveRequest(BaseModel):
     employees: list[str]
+
+
+class ModelSaveRequest(BaseModel):
+    model: str = Field(..., min_length=1, max_length=120)
 
 
 def _extract_upload_text(filename: str, data: bytes) -> str:
@@ -139,7 +144,7 @@ def health():
         "ok": True,
         "workbook": str(ensure_working_workbook()),
         "active": active,
-        "model": config.MODEL_NAME,
+        "model": get_active_model(),
         "price_items": price_count,
     }
 
@@ -357,6 +362,27 @@ def api_employees_put(body: EmployeesSaveRequest):
         encoding="utf-8",
     )
     return {"ok": True, "employees": employees, "count": len(employees)}
+
+
+@app.get("/api/model")
+def api_model_get():
+    try:
+        return model_settings_payload()
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.put("/api/model")
+def api_model_put(body: ModelSaveRequest):
+    try:
+        saved = set_active_model(body.model)
+        payload = model_settings_payload()
+        payload["message"] = f"Активная модель: {saved['model']}"
+        return payload
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @app.get("/api/excel-log")

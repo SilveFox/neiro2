@@ -20,6 +20,7 @@ data/workbooks/*.written.json
 data/active_workbook.json
 data/workbook.xlsx
 data/written_reports.json
+data/model_settings.json
 
 # Optional JSON dumps of parsed reports
 reports_json/

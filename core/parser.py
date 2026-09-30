@@ -818,9 +818,12 @@ def call_ollama(report_text: str, extra_prompt: str = "", timeout: int | None = 
     user_content = "\n\n".join(user_parts)
 
     # Prefer chat API + JSON mode — qwen often ignores generate-only prompts.
+    from core.model_settings import get_active_model
+
+    model_name = get_active_model()
     chat_url = getattr(config, "OLLAMA_CHAT_URL", None) or "http://localhost:11434/api/chat"
     payload = {
-        "model": config.MODEL_NAME,
+        "model": model_name,
         "stream": False,
         "format": "json",
         "options": {"temperature": 0.1},
@@ -844,7 +847,7 @@ def call_ollama(report_text: str, extra_prompt: str = "", timeout: int | None = 
     if response.status_code != 200:
         # Fallback to /api/generate with format=json
         gen_payload = {
-            "model": config.MODEL_NAME,
+            "model": model_name,
             "prompt": f"{system}\n\n{user_content}\n\nJSON:",
             "stream": False,
             "format": "json",
