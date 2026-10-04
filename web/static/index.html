@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261004db" />
 </head>
 <body>
   <header class="topbar">
@@ -117,7 +117,9 @@
             <textarea id="jsonEditor" rows="10" spellcheck="false"></textarea>
             <div class="btn-row">
               <button type="button" class="btn outline" id="btnCalc">Пересчитать по прайсу</button>
+              <button type="button" class="btn primary" id="btnSaveDb">Сохранить в БД</button>
             </div>
+            <p class="hint" id="dbSaveStatus"></p>
           </details>
         </aside>
       </div>
@@ -373,6 +375,7 @@
               <li>Строка «Итого» — сумма по отчёту (без ненайденных в прайсе работ).</li>
               <li>Блок «Проблемные работы» внизу — что не сопоставилось с прайсом; добавьте работу в прайс или алиас и пересчитайте.</li>
               <li>«JSON от нейросети» — можно править вручную, затем «Пересчитать по прайсу».</li>
+              <li>«Сохранить в БД» — записывает текущий JSON и расчёт в локальную SQLite (`data/reports.db`).</li>
               <li>«Отмена» сбрасывает текущий предпросмотр в этой сессии.</li>
             </ul>
             <p>Расчёт в интерфейсе идёт по JSON-прайсу (<code>data/price_list.json</code>). В Excel тарифы берутся с листа «Данные» книги — держите их согласованными.</p>
@@ -455,6 +458,6 @@
     </section>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20261004db"></script>
 </body>
 </html>

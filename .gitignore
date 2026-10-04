@@ -6,6 +6,8 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+docs/*.docs
+skripts/
 
 # IDE / OS
 .idea/
@@ -21,6 +23,10 @@ data/active_workbook.json
 data/workbook.xlsx
 data/written_reports.json
 data/model_settings.json
+data/reports.db
+data/reports.db-*
+data/reports_test_save.db
+data/reports_test_save.db-*
 
 # Optional JSON dumps of parsed reports
 reports_json/

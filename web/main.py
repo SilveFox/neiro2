@@ -16,6 +16,7 @@ from core import config
 from core.excel_writer import append_calc_to_workbook, ensure_working_workbook, get_written_log
 from core.model_settings import get_active_model, model_settings_payload, set_active_model
 from core.parser import ParseError, parse_report_text, validate_report
+from core.report_db import list_reports, save_report
 from core.pricing import (
     PriceList,
     calculate_report,
@@ -80,6 +81,13 @@ class ModelSaveRequest(BaseModel):
     model: str = Field(..., min_length=1, max_length=120)
 
 
+class SaveReportDbRequest(BaseModel):
+    report: dict[str, Any]
+    calculation: dict[str, Any] | None = None
+    source_text: str | None = None
+    report_date: str | None = None
+
+
 def _extract_upload_text(filename: str, data: bytes) -> str:
     name = (filename or "").lower()
     if name.endswith((".txt", ".csv", ".md", ".log")):
@@ -128,7 +136,13 @@ def index():
     index_path = STATIC / "index.html"
     if not index_path.exists():
         raise HTTPException(500, "Нет static/index.html")
-    return FileResponse(index_path)
+    return FileResponse(
+        index_path,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 @app.get("/api/health")
@@ -260,6 +274,58 @@ def api_calculate(body: ExcelRequest):
         return {"ok": True, "calculation": calc.to_dict()}
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/reports/save")
+def api_reports_save(body: SaveReportDbRequest):
+    try:
+        report = validate_report(body.report)
+        if body.report.get("source_text_hash"):
+            report["source_text_hash"] = body.report["source_text_hash"]
+        if body.report_date:
+            report["report_date"] = body.report_date
+        elif body.report.get("report_date"):
+            report["report_date"] = body.report["report_date"]
+
+        calc_dict = body.calculation
+        if calc_dict is None:
+            calc_dict = calculate_report(report).to_dict()
+
+        result = save_report(
+            report,
+            calculation=calc_dict,
+            source_text=body.source_text,
+        )
+        return result
+    except ParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/reports")
+def api_reports_list(limit: int = 50):
+    try:
+        return {"ok": True, "items": list_reports(limit=limit)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/reports/{report_id}")
+def api_reports_get(report_id: int):
+    try:
+        from core.report_db import get_report_details
+
+        details = get_report_details(report_id)
+        if not details:
+            raise HTTPException(404, f"Отчёт id={report_id} не найден")
+        return {"ok": True, **details}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/api/excel")

@@ -20,6 +20,7 @@ PRICE_CACHE = DATA_DIR / "price_list.json"
 EMPLOYEES_CACHE = DATA_DIR / "employees.json"
 JOB_ALIASES_CACHE = DATA_DIR / "job_aliases.json" # список наименования работы
 WRITTEN_LOG = DATA_DIR / "written_reports.json"  # legacy; per-workbook preferred
+REPORTS_DB = DATA_DIR / "reports.db"  # SQLite: сохранённые отчёты
 
 SHEET_DATA = "Данные"
 SHEET_CALC = "Расчет"

@@ -10,6 +10,8 @@
   const statusText = $("statusText");
   const btnParse = $("btnParse");
   const btnCalc = $("btnCalc");
+  const btnSaveDb = $("btnSaveDb");
+  const dbSaveStatus = $("dbSaveStatus");
   const btnExcel = $("btnExcel");
   const btnCancelPreview = $("btnCancelPreview");
   const btnSelectFile = $("btnSelectFile");
@@ -104,7 +106,7 @@
   }
 
   function setBusy(busy) {
-    [btnParse, btnCalc, btnExcel, btnNewMonth, btnActivateMonth, btnSelectFile, btnPaste].forEach((b) => {
+    [btnParse, btnCalc, btnSaveDb, btnExcel, btnNewMonth, btnActivateMonth, btnSelectFile, btnPaste].forEach((b) => {
       if (b) b.disabled = busy;
     });
     if (!busy && currentCalc) btnExcel.disabled = false;
@@ -404,6 +406,59 @@
       log(`Пересчёт готов. Итого: ${data.calculation.grand_total}`);
     } catch (e) {
       log(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveToDb() {
+    if (dbSaveStatus) dbSaveStatus.textContent = "";
+    if (!jsonEditor.value.trim()) {
+      log("Нет JSON отчёта для сохранения в БД");
+      if (dbSaveStatus) dbSaveStatus.textContent = "Сначала разберите отчёт";
+      return;
+    }
+    setBusy(true);
+    if (dbSaveStatus) dbSaveStatus.textContent = "Сохранение…";
+    try {
+      const report = reportWithSelectedDate();
+      let calculation = currentCalc;
+      if (!calculation) {
+        const resCalc = await fetch("/api/calculate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ report, report_date: report.report_date }),
+        });
+        const dataCalc = await resCalc.json().catch(() => ({}));
+        if (!resCalc.ok) {
+          throw new Error(dataCalc.detail || "Не удалось пересчитать перед сохранением");
+        }
+        calculation = dataCalc.calculation;
+        showCalc(calculation);
+      }
+      const res = await fetch("/api/reports/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          report,
+          calculation,
+          source_text: reportText.value.trim() || null,
+          report_date: report.report_date,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || res.statusText);
+      }
+      currentReport = report;
+      const msg = data.message || `Сохранено в БД id=${data.id}`;
+      log(`${msg}. Итого: ${data.grand_total ?? "—"}`);
+      if (dbSaveStatus) {
+        dbSaveStatus.textContent = `Сохранено · id ${data.id} · ${data.workers_names || data.report_date || ""} · работ ${data.jobs_count ?? "—"} · ${data.grand_total ?? 0} ₽`;
+      }
+    } catch (e) {
+      log(`Ошибка БД: ${e.message}`);
+      if (dbSaveStatus) dbSaveStatus.textContent = e.message;
     } finally {
       setBusy(false);
     }
@@ -1008,6 +1063,7 @@
 
   btnParse.addEventListener("click", parseReport);
   btnCalc.addEventListener("click", recalculate);
+  if (btnSaveDb) btnSaveDb.addEventListener("click", saveToDb);
   btnExcel.addEventListener("click", writeExcel);
   btnCancelPreview.addEventListener("click", cancelPreview);
   btnNewMonth.addEventListener("click", createMonth);
