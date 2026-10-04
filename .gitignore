@@ -7,7 +7,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 docs/*.docs
-skripts/
+scripts/
 
 # IDE / OS
 .idea/
