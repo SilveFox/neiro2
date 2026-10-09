@@ -122,6 +122,18 @@
   }
 
   /* -------- navigation -------- */
+  const navToggle = $("navToggle");
+  const mainNav = $("mainNav");
+  const workbookCreateStatus = $("workbookCreateStatus");
+  const workbookEditStatus = $("workbookEditStatus");
+  const btnEditTable = $("btnEditTable");
+  const btnRefreshWorkbooks = $("btnRefreshWorkbooks");
+
+  function closeMobileNav() {
+    if (mainNav) mainNav.classList.remove("open");
+    if (navToggle) navToggle.setAttribute("aria-expanded", "false");
+  }
+
   function showView(name) {
     document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
     document.querySelectorAll(".nav-link").forEach((a) => {
@@ -139,6 +151,8 @@
     }
     if (name === "excel-log") loadExcelLog();
     location.hash = name;
+    closeMobileNav();
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   document.querySelectorAll("[data-nav]").forEach((el) => {
@@ -147,6 +161,13 @@
       showView(el.dataset.nav);
     });
   });
+
+  if (navToggle && mainNav) {
+    navToggle.addEventListener("click", () => {
+      const open = mainNav.classList.toggle("open");
+      navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
 
   document.querySelectorAll("[data-help-anchor]").forEach((el) => {
     el.addEventListener("click", () => {
@@ -609,11 +630,13 @@
     const value = newMonth.value;
     if (!value) {
       log("Выберите месяц для создания");
+      if (workbookCreateStatus) workbookCreateStatus.textContent = "Укажите месяц новой таблицы";
       return;
     }
     const [y, m] = value.split("-").map(Number);
     setBusy(true);
-    log(`Создание пустого месяца ${value}...`);
+    if (workbookCreateStatus) workbookCreateStatus.textContent = `Создание таблицы ${value}…`;
+    log(`Создание новой таблицы (месяц ${value})...`);
     try {
       const res = await fetch("/api/workbook/new", {
         method: "POST",
@@ -622,13 +645,18 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        log(`Ошибка: ${data.detail || res.statusText}`);
+        const err = data.detail || res.statusText;
+        log(`Ошибка: ${err}`);
+        if (workbookCreateStatus) workbookCreateStatus.textContent = err;
         return;
       }
-      log(data.message || "Месяц создан");
+      const msg = data.message || `Таблица ${value} создана и активна`;
+      log(msg);
+      if (workbookCreateStatus) workbookCreateStatus.textContent = msg;
       await refreshWorkbooks();
     } catch (e) {
       log(e.message);
+      if (workbookCreateStatus) workbookCreateStatus.textContent = e.message;
     } finally {
       setBusy(false);
     }
@@ -638,9 +666,11 @@
     const ym = monthSelect.value;
     if (!ym) {
       log("Нет месяца для активации");
+      if (workbookEditStatus) workbookEditStatus.textContent = "Выберите таблицу в списке";
       return;
     }
     setBusy(true);
+    if (workbookEditStatus) workbookEditStatus.textContent = `Активация ${ym}…`;
     try {
       const res = await fetch("/api/workbook/activate", {
         method: "POST",
@@ -649,16 +679,39 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        log(`Ошибка активации: ${data.detail || res.statusText}`);
+        const err = data.detail || res.statusText;
+        log(`Ошибка активации: ${err}`);
+        if (workbookEditStatus) workbookEditStatus.textContent = err;
         return;
       }
-      log(`Активна книга: ${data.active?.name || ym}`);
+      const msg = `Активна таблица: ${data.active?.name || ym}`;
+      log(msg);
+      if (workbookEditStatus) workbookEditStatus.textContent = msg;
       await refreshWorkbooks();
     } catch (e) {
       log(e.message);
+      if (workbookEditStatus) workbookEditStatus.textContent = e.message;
     } finally {
       setBusy(false);
     }
+  }
+
+  async function editExistingTable() {
+    const ym = monthSelect.value;
+    if (!ym) {
+      if (workbookEditStatus) workbookEditStatus.textContent = "Выберите таблицу в списке";
+      return;
+    }
+    await activateMonth();
+    if (reportDate && /^\d{4}-\d{2}$/.test(ym)) {
+      const day = String(Math.min(28, new Date().getDate())).padStart(2, "0");
+      reportDate.value = `${ym}-${day}`;
+    }
+    if (workbookEditStatus) {
+      workbookEditStatus.textContent =
+        `Таблица ${ym} активна. Откройте «Отчёт», разберите данные и нажмите «Формировать отчёт» для дозаполнения.`;
+    }
+    showView("report");
   }
 
   async function loadHealth() {
@@ -1067,6 +1120,8 @@
   btnExcel.addEventListener("click", writeExcel);
   btnCancelPreview.addEventListener("click", cancelPreview);
   btnNewMonth.addEventListener("click", createMonth);
+  if (btnEditTable) btnEditTable.addEventListener("click", editExistingTable);
+  if (btnRefreshWorkbooks) btnRefreshWorkbooks.addEventListener("click", refreshWorkbooks);
   btnActivateMonth.addEventListener("click", activateMonth);
   reportDate.addEventListener("change", syncDateIntoEditor);
 
