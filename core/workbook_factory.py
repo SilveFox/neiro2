@@ -62,8 +62,21 @@ def written_log_for(workbook_path: Path) -> Path:
 
 
 def year_month_from_path(path: Path) -> str | None:
-    m = re.search(r"SE_Lukhovitsy_(\d{4}-\d{2})\.xlsx$", path.name)
+    """Extract YYYY-MM from monthly workbook filename (UI label / routing key)."""
+    m = re.search(r"(?:^|_)(\d{4}-\d{2})\.xlsx$", path.name, flags=re.IGNORECASE)
     return m.group(1) if m else None
+
+
+def workbook_label(year_month: str | None, path: Path | str | None = None) -> str:
+    """Human-facing table name: always YYYY-MM when known."""
+    ym = (year_month or "").strip()
+    if YEAR_MONTH_RE.match(ym):
+        return ym
+    if path is not None:
+        extracted = year_month_from_path(Path(path))
+        if extracted:
+            return extracted
+    return ym or (Path(path).name if path else "")
 
 
 def get_active_meta() -> dict[str, Any] | None:
@@ -81,6 +94,10 @@ def get_active_meta() -> dict[str, Any] | None:
     if not path.exists():
         return None
     data["path"] = str(path)
+    ym = data.get("year_month") or year_month_from_path(path) or ""
+    data["year_month"] = ym
+    data["name"] = path.name
+    data["label"] = workbook_label(ym, path)
     return data
 
 
@@ -93,6 +110,7 @@ def set_active_workbook(path: Path, year_month: str | None = None) -> dict[str, 
         "path": str(path),
         "year_month": ym,
         "name": path.name,
+        "label": workbook_label(ym, path),
     }
     config.ACTIVE_WORKBOOK_META.write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -143,6 +161,7 @@ def list_month_workbooks() -> list[dict[str, Any]]:
                 "path": str(path.resolve()),
                 "name": path.name,
                 "year_month": ym,
+                "label": workbook_label(ym, path),
                 "active": active_path is not None and path.resolve() == active_path,
             }
         )
@@ -232,7 +251,7 @@ def create_month_workbook(
     config.WORKBOOKS_DIR.mkdir(parents=True, exist_ok=True)
     dest = month_workbook_path(year, month)
     if dest.exists():
-        raise WorkbookExistsError(f"Месяц {year:04d}-{month:02d} уже существует: {dest.name}")
+        raise WorkbookExistsError(f"Месяц {year:04d}-{month:02d} уже существует")
 
     if not config.SOURCE_WORKBOOK.exists():
         raise FileNotFoundError(f"Нет исходного Excel: {config.SOURCE_WORKBOOK}")

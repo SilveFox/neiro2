@@ -20,6 +20,7 @@ from core.report_db import list_reports, save_report
 from core.pricing import (
     PriceList,
     calculate_report,
+    link_synonym_to_official,
     load_aliases_document,
     save_aliases_document,
     save_price_items,
@@ -71,6 +72,11 @@ class PriceSaveRequest(BaseModel):
 class AliasesSaveRequest(BaseModel):
     aliases: list[dict[str, Any]]
     readme: list[str] | None = None
+
+
+class AliasLinkRequest(BaseModel):
+    synonym: str = Field(..., min_length=1, max_length=400)
+    official: str = Field(..., min_length=1, max_length=400)
 
 
 class EmployeesSaveRequest(BaseModel):
@@ -398,6 +404,17 @@ def api_aliases_put(body: AliasesSaveRequest):
         if body.readme is not None:
             payload["_readme"] = body.readme
         saved = save_aliases_document(payload)
+        return {"ok": True, **saved}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.post("/api/aliases/link")
+def api_aliases_link(body: AliasLinkRequest):
+    try:
+        saved = link_synonym_to_official(body.synonym, body.official)
         return {"ok": True, **saved}
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

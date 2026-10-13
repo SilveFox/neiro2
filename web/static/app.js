@@ -25,9 +25,12 @@
   const sessionHistory = $("sessionHistory");
   const newMonth = $("newMonth");
   const monthSelect = $("monthSelect");
+  const monthSelectSettings = $("monthSelectSettings");
   const activeWorkbookLabel = $("activeWorkbookLabel");
+  const reportWorkbookHint = $("reportWorkbookHint");
   const btnNewMonth = $("btnNewMonth");
   const btnActivateMonth = $("btnActivateMonth");
+  const btnEditTable = $("btnEditTable");
   const priceBody = $("priceBody");
   const priceSearch = $("priceSearch");
   const priceStatus = $("priceStatus");
@@ -106,7 +109,7 @@
   }
 
   function setBusy(busy) {
-    [btnParse, btnCalc, btnSaveDb, btnExcel, btnNewMonth, btnActivateMonth, btnSelectFile, btnPaste].forEach((b) => {
+    [btnParse, btnCalc, btnSaveDb, btnExcel, btnNewMonth, btnActivateMonth, btnEditTable, btnSelectFile, btnPaste, monthSelect, monthSelectSettings].forEach((b) => {
       if (b) b.disabled = busy;
     });
     if (!busy && currentCalc) btnExcel.disabled = false;
@@ -126,8 +129,8 @@
   const mainNav = $("mainNav");
   const workbookCreateStatus = $("workbookCreateStatus");
   const workbookEditStatus = $("workbookEditStatus");
-  const btnEditTable = $("btnEditTable");
   const btnRefreshWorkbooks = $("btnRefreshWorkbooks");
+  let suppressMonthChange = false;
 
   function closeMobileNav() {
     if (mainNav) mainNav.classList.remove("open");
@@ -141,6 +144,7 @@
     });
     const view = document.getElementById(`view-${name}`);
     if (view) view.classList.add("active");
+    if (name === "report") refreshWorkbooks();
     if (name === "price") loadPrice();
     if (name === "aliases") loadAliases();
     if (name === "settings") {
@@ -260,35 +264,111 @@
         const key = u.name.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
-        const li = document.createElement("li");
-        li.innerHTML = `
-          <span class="warn">!</span>
-          <span>Проблемные работы (не найдено в прайсе): <strong>${escapeHtml(u.name)}</strong></span>
-          <button type="button" class="btn outline btn-add-price">Добавить в прайс</button>`;
-        li.querySelector(".btn-add-price").addEventListener("click", () => addUnmatchedToPrice(u));
-        problemList.appendChild(li);
+        problemList.appendChild(buildUnmatchedPicker(u));
       }
     }
   }
 
-  async function addUnmatchedToPrice(item) {
-    await loadPrice(true);
-    const exists = priceItems.some((p) => p.name.toLowerCase() === item.name.toLowerCase());
-    if (exists) {
-      log(`Уже есть в прайсе: ${item.name}`);
-      showView("price");
+  function pricePickScore(query, name) {
+    const q = String(query || "").toLowerCase();
+    const n = String(name || "").toLowerCase();
+    if (!q || !n) return 0;
+    if (n === q) return 100;
+    if (n.includes(q) || q.includes(n)) return 80;
+    const qt = q.split(/[^a-zа-яё0-9]+/i).filter((t) => t.length > 2);
+    const nt = new Set(n.split(/[^a-zа-яё0-9]+/i).filter((t) => t.length > 2));
+    if (!qt.length) return 0;
+    const hit = qt.filter((t) => nt.has(t)).length;
+    return (hit / qt.length) * 60;
+  }
+
+  function rankedPriceNames(query) {
+    const items = (priceItems || []).filter((p) => (p.name || "").trim());
+    const scored = items.map((p) => ({
+      name: p.name,
+      score: pricePickScore(query, p.name),
+    }));
+    scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name, "ru"));
+    return scored.map((x) => x.name);
+  }
+
+  function fillPricePickSelect(select, query, keepValue) {
+    const names = rankedPriceNames(query);
+    const q = (query || "").trim().toLowerCase();
+    const filtered = q
+      ? names.filter((n) => n.toLowerCase().includes(q) || pricePickScore(query, n) >= 20)
+      : names;
+    const current = keepValue || select.value;
+    select.innerHTML = `<option value="">Выберите из прайс-листа…</option>`;
+    for (const name of filtered) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      select.appendChild(opt);
+    }
+    if (current && [...select.options].some((o) => o.value === current)) {
+      select.value = current;
+    } else if (!current && filtered.length && q && pricePickScore(query, filtered[0]) >= 20) {
+      select.value = filtered[0];
+    }
+  }
+
+  function buildUnmatchedPicker(item) {
+    const li = document.createElement("li");
+    li.className = "problem-item";
+    li.innerHTML = `
+      <div class="problem-item-head">
+        <span class="warn">!</span>
+        <span>Не найдено в прайсе: <strong>${escapeHtml(item.name)}</strong></span>
+      </div>
+      <div class="price-pick">
+        <input type="search" class="price-pick-search" placeholder="Поиск в прайсе…" autocomplete="off" />
+        <select class="price-pick-select" aria-label="Позиция прайс-листа">
+          <option value="">Выберите из прайс-листа…</option>
+        </select>
+        <button type="button" class="btn primary btn-pick-price">Выбрать</button>
+      </div>
+      <p class="price-pick-hint muted">Выбор запишет это название в алиасы выбранной позиции.</p>`;
+    const search = li.querySelector(".price-pick-search");
+    const select = li.querySelector(".price-pick-select");
+    const btn = li.querySelector(".btn-pick-price");
+    const hint = li.querySelector(".price-pick-hint");
+
+    const refreshOptions = () => fillPricePickSelect(select, search.value || item.name, select.value);
+    search.addEventListener("input", refreshOptions);
+    btn.addEventListener("click", () => linkUnmatchedToPrice(item, select.value, btn, hint));
+    const ready = priceItems.length ? Promise.resolve() : loadPrice(true);
+    ready.then(refreshOptions);
+    return li;
+  }
+
+  async function linkUnmatchedToPrice(item, official, btn, hint) {
+    const chosen = (official || "").trim();
+    if (!chosen) {
+      if (hint) hint.textContent = "Сначала выберите позицию из прайс-листа.";
       return;
     }
-    priceItems.push({
-      name: item.name,
-      price: 0,
-      unit: item.unit || "шт.",
-      row: null,
-    });
-    priceDirty = true;
-    renderPriceTable();
-    showView("price");
-    priceStatus.textContent = `Добавлено «${item.name}». Укажите цену и нажмите «Сохранить».`;
+    if (btn) btn.disabled = true;
+    try {
+      const res = await fetch("/api/aliases/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ synonym: item.name, official: chosen }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || res.statusText);
+      }
+      aliasesDoc = data;
+      log(`Алиас: «${item.name}» → «${chosen}»`);
+      if (hint) hint.textContent = `Сохранено в алиасы: «${chosen}». Пересчёт…`;
+      await recalculate();
+    } catch (e) {
+      log(`Не удалось привязать к прайсу: ${e.message}`);
+      if (hint) hint.textContent = e.message;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   function readEditedReport() {
@@ -588,28 +668,88 @@
   });
 
   /* -------- workbooks / settings -------- */
-  function renderWorkbookList(data) {
-    const active = data.active;
-    activeWorkbookLabel.textContent = active
-      ? `Активная книга: ${active.name || active.path}${active.year_month ? " (" + active.year_month + ")" : ""}`
-      : "Активная книга: —";
+  function workbookDisplayName(item) {
+    if (!item) return "—";
+    const ym = String(item.year_month || item.label || "").trim();
+    if (/^\d{4}-\d{2}$/.test(ym)) return ym;
+    const fromName = String(item.name || item.path || "").match(/(\d{4}-\d{2})(?:\.xlsx)?$/i);
+    if (fromName) return fromName[1];
+    return item.label || item.year_month || item.name || "—";
+  }
 
-    const items = data.items || [];
-    monthSelect.innerHTML = "";
+  function updateReportWorkbookHint(active) {
+    if (!reportWorkbookHint) return;
+    if (active) {
+      const label = workbookDisplayName(active);
+      const dateYm = (reportDate.value || "").slice(0, 7);
+      const target = /^\d{4}-\d{2}$/.test(dateYm) ? dateYm : label;
+      reportWorkbookHint.textContent =
+        `Таблица: ${label}. Отчёт попадёт в ${target} (дневной лист по дате ниже).`;
+    } else {
+      reportWorkbookHint.textContent =
+        "Выберите таблицу (формат ГГГГ-ММ). Создание новых — в «Настройках».";
+    }
+  }
+
+  function fillMonthSelect(select, items, preferred, selectedActive) {
+    if (!select) return;
+    const prev = preferred || select.value;
+    select.innerHTML = "";
     if (!items.length) {
       const opt = document.createElement("option");
       opt.value = "";
       opt.textContent = "Нет созданных месяцев";
-      monthSelect.appendChild(opt);
+      select.appendChild(opt);
       return;
     }
     for (const item of items) {
       const opt = document.createElement("option");
-      opt.value = item.year_month || item.path;
-      opt.textContent = `${item.year_month || item.name}${item.active ? " — активный" : ""}`;
-      if (item.active) opt.selected = true;
-      monthSelect.appendChild(opt);
+      const label = workbookDisplayName(item);
+      opt.value = item.year_month || label;
+      opt.textContent = item.active ? `${label} — активный` : label;
+      select.appendChild(opt);
     }
+    if (prev && [...select.options].some((o) => o.value === prev)) {
+      select.value = prev;
+    } else if (selectedActive) {
+      select.value = selectedActive;
+    }
+  }
+
+  function renderWorkbookList(data) {
+    const active = data.active;
+    if (activeWorkbookLabel) {
+      activeWorkbookLabel.textContent = active
+        ? `Активная таблица: ${workbookDisplayName(active)}`
+        : "Активная таблица: —";
+    }
+    updateReportWorkbookHint(active);
+
+    const items = data.items || [];
+    let selectedActive = "";
+    for (const item of items) {
+      if (item.active) selectedActive = item.year_month || workbookDisplayName(item);
+    }
+    const preferred = monthSelect?.value || monthSelectSettings?.value || selectedActive;
+    suppressMonthChange = true;
+    fillMonthSelect(monthSelect, items, preferred, selectedActive);
+    fillMonthSelect(monthSelectSettings, items, preferred, selectedActive);
+    suppressMonthChange = false;
+  }
+
+  function selectedYearMonth() {
+    return (monthSelect?.value || monthSelectSettings?.value || "").trim();
+  }
+
+  function setBothMonthSelects(ym) {
+    suppressMonthChange = true;
+    if (monthSelect && [...(monthSelect.options || [])].some((o) => o.value === ym)) {
+      monthSelect.value = ym;
+    }
+    if (monthSelectSettings && [...(monthSelectSettings.options || [])].some((o) => o.value === ym)) {
+      monthSelectSettings.value = ym;
+    }
+    suppressMonthChange = false;
   }
 
   async function refreshWorkbooks() {
@@ -624,6 +764,36 @@
     } catch (e) {
       log("Сбой списка книг: " + e.message);
     }
+  }
+
+  function syncReportDateToMonth(ym) {
+    if (!reportDate || !/^\d{4}-\d{2}$/.test(ym || "")) return;
+    const current = (reportDate.value || "").trim();
+    let day = "01";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(current)) {
+      day = current.slice(8, 10);
+      const maxDay = new Date(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0).getDate();
+      day = String(Math.min(Number(day) || 1, maxDay)).padStart(2, "0");
+    }
+    const next = `${ym}-${day}`;
+    if (reportDate.value !== next) {
+      reportDate.value = next;
+      syncDateIntoEditor();
+    }
+  }
+
+  function syncMonthSelectToReportDate() {
+    if (!reportDate) return;
+    const d = (reportDate.value || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+    const ym = d.slice(0, 7);
+    const hasOpt =
+      (monthSelect && [...monthSelect.options].some((o) => o.value === ym)) ||
+      (monthSelectSettings && [...monthSelectSettings.options].some((o) => o.value === ym));
+    if (!hasOpt) return;
+    if (selectedYearMonth() === ym) return;
+    setBothMonthSelects(ym);
+    activateMonth({ quiet: true, yearMonth: ym });
   }
 
   async function createMonth() {
@@ -662,13 +832,14 @@
     }
   }
 
-  async function activateMonth() {
-    const ym = monthSelect.value;
+  async function activateMonth({ syncDate = false, quiet = false, yearMonth = null } = {}) {
+    const ym = (yearMonth || selectedYearMonth()).trim();
     if (!ym) {
-      log("Нет месяца для активации");
+      if (!quiet) log("Нет месяца для активации");
       if (workbookEditStatus) workbookEditStatus.textContent = "Выберите таблицу в списке";
-      return;
+      return false;
     }
+    setBothMonthSelects(ym);
     setBusy(true);
     if (workbookEditStatus) workbookEditStatus.textContent = `Активация ${ym}…`;
     try {
@@ -680,36 +851,37 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         const err = data.detail || res.statusText;
-        log(`Ошибка активации: ${err}`);
+        if (!quiet) log(`Ошибка активации: ${err}`);
         if (workbookEditStatus) workbookEditStatus.textContent = err;
-        return;
+        if (reportWorkbookHint) reportWorkbookHint.textContent = err;
+        return false;
       }
-      const msg = `Активна таблица: ${data.active?.name || ym}`;
-      log(msg);
+      const msg = `Активна таблица: ${workbookDisplayName(data.active) || ym}`;
+      if (!quiet) log(msg);
       if (workbookEditStatus) workbookEditStatus.textContent = msg;
+      if (syncDate) syncReportDateToMonth(ym);
       await refreshWorkbooks();
+      return true;
     } catch (e) {
-      log(e.message);
+      if (!quiet) log(e.message);
       if (workbookEditStatus) workbookEditStatus.textContent = e.message;
+      return false;
     } finally {
       setBusy(false);
     }
   }
 
   async function editExistingTable() {
-    const ym = monthSelect.value;
+    const ym = selectedYearMonth();
     if (!ym) {
       if (workbookEditStatus) workbookEditStatus.textContent = "Выберите таблицу в списке";
       return;
     }
-    await activateMonth();
-    if (reportDate && /^\d{4}-\d{2}$/.test(ym)) {
-      const day = String(Math.min(28, new Date().getDate())).padStart(2, "0");
-      reportDate.value = `${ym}-${day}`;
-    }
+    const ok = await activateMonth({ syncDate: true, yearMonth: ym });
+    if (!ok) return;
     if (workbookEditStatus) {
       workbookEditStatus.textContent =
-        `Таблица ${ym} активна. Откройте «Отчёт», разберите данные и нажмите «Формировать отчёт» для дозаполнения.`;
+        `Таблица ${ym} активна. Разберите данные и нажмите «Формировать отчёт» для дозаполнения.`;
     }
     showView("report");
   }
@@ -1120,10 +1292,28 @@
   btnExcel.addEventListener("click", writeExcel);
   btnCancelPreview.addEventListener("click", cancelPreview);
   btnNewMonth.addEventListener("click", createMonth);
-  if (btnEditTable) btnEditTable.addEventListener("click", editExistingTable);
   if (btnRefreshWorkbooks) btnRefreshWorkbooks.addEventListener("click", refreshWorkbooks);
-  btnActivateMonth.addEventListener("click", activateMonth);
-  reportDate.addEventListener("change", syncDateIntoEditor);
+  if (btnActivateMonth) {
+    btnActivateMonth.addEventListener("click", () => activateMonth({ syncDate: true }));
+  }
+  if (btnEditTable) btnEditTable.addEventListener("click", editExistingTable);
+  function onMonthSelectChange(select) {
+    if (suppressMonthChange) return;
+    const ym = select.value;
+    setBothMonthSelects(ym);
+    activateMonth({ syncDate: true, yearMonth: ym });
+  }
+  if (monthSelect) monthSelect.addEventListener("change", () => onMonthSelectChange(monthSelect));
+  if (monthSelectSettings) {
+    monthSelectSettings.addEventListener("change", () => onMonthSelectChange(monthSelectSettings));
+  }
+  reportDate.addEventListener("change", () => {
+    syncDateIntoEditor();
+    syncMonthSelectToReportDate();
+    updateReportWorkbookHint({
+      year_month: selectedYearMonth() || (reportDate.value || "").slice(0, 7),
+    });
+  });
 
   window.addEventListener("beforeunload", (e) => {
     if (priceDirty) {

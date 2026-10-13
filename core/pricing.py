@@ -473,6 +473,62 @@ def save_aliases_document(doc: dict[str, Any], path: Path | None = None) -> dict
     return out
 
 
+def link_synonym_to_official(
+    synonym: str,
+    official: str,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Attach an unmatched report name as a synonym of an official price item."""
+    syn = (synonym or "").strip()
+    official = (official or "").strip()
+    if not syn:
+        raise ValueError("Пустое название работы")
+    if not official:
+        raise ValueError("Не выбрана позиция прайс-листа")
+    if normalize_text(syn) == normalize_text(official):
+        raise ValueError("Название уже совпадает с выбранной позицией прайса")
+
+    doc = load_aliases_document(path)
+    aliases: list[dict[str, Any]] = list(doc.get("aliases") or [])
+    official_norm = normalize_text(official)
+    syn_norm = normalize_text(syn)
+
+    target_idx: int | None = None
+    for i, block in enumerate(aliases):
+        if not isinstance(block, dict):
+            continue
+        off = str(block.get("official") or "").strip()
+        if normalize_text(off) == official_norm:
+            target_idx = i
+            official = off
+            break
+    if target_idx is None:
+        aliases.append({"official": official, "synonyms": []})
+        target_idx = len(aliases) - 1
+
+    syns = [
+        str(s).strip()
+        for s in (aliases[target_idx].get("synonyms") or [])
+        if str(s).strip()
+    ]
+    if not any(normalize_text(s) == syn_norm for s in syns):
+        syns.append(syn)
+    aliases[target_idx]["synonyms"] = syns
+    aliases[target_idx]["official"] = official
+
+    for i, block in enumerate(aliases):
+        if i == target_idx or not isinstance(block, dict):
+            continue
+        block["synonyms"] = [
+            str(s).strip()
+            for s in (block.get("synonyms") or [])
+            if str(s).strip() and normalize_text(str(s)) != syn_norm
+        ]
+
+    doc["aliases"] = aliases
+    return save_aliases_document(doc, path)
+
+
 def _similarity(a: str, b: str) -> float:
     # (правка Новиков С.С. 29.07.2026)
     # Используем два уровня:

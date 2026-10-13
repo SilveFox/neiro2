@@ -20,7 +20,12 @@ from core.parser import (
     strip_volume_from_task_fields,
     validate_report,
 )
-from core.pricing import PriceList, calculate_report, normalize_text
+from core.pricing import (
+    PriceList,
+    calculate_report,
+    link_synonym_to_official,
+    normalize_text,
+)
 
 
 SAMPLE_REPORT = {
@@ -456,6 +461,44 @@ class ExcelTests(unittest.TestCase):
                 r, c = preserved_coord
                 self.assertEqual(ws.cell(r, c).value, preserved_formula)
             wb.close()
+
+
+class AliasLinkTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.path = self.tmp / "job_aliases.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_creates_block_and_synonym(self):
+        saved = link_synonym_to_official("обжим рж45", "Обжим коннектора RJ-45, BNC", self.path)
+        blocks = saved["aliases"]
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["official"], "Обжим коннектора RJ-45, BNC")
+        self.assertIn("обжим рж45", blocks[0]["synonyms"])
+
+    def test_appends_to_existing_and_moves_from_other(self):
+        self.path.write_text(
+            json.dumps(
+                {
+                    "aliases": [
+                        {"official": "Сварка 1-7 волокон в муфте, кроссе", "synonyms": ["сварок 1-7"]},
+                        {"official": "Обжим коннектора RJ-45, BNC", "synonyms": []},
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        saved = link_synonym_to_official("сварок 1-7", "Обжим коннектора RJ-45, BNC", self.path)
+        by_off = {b["official"]: b["synonyms"] for b in saved["aliases"]}
+        self.assertIn("сварок 1-7", by_off["Обжим коннектора RJ-45, BNC"])
+        self.assertNotIn("сварок 1-7", by_off["Сварка 1-7 волокон в муфте, кроссе"])
+
+    def test_rejects_same_name(self):
+        with self.assertRaises(ValueError):
+            link_synonym_to_official("Обжим коннектора RJ-45, BNC", "Обжим коннектора RJ-45, BNC", self.path)
 
 
 if __name__ == "__main__":

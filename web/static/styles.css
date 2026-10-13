@@ -267,6 +267,14 @@ button, input, textarea, select { font: inherit; }
 
 .field-row.wrap { flex-wrap: wrap; }
 
+.report-workbook-row {
+  margin-bottom: 0;
+}
+
+#reportWorkbookHint {
+  margin: 4px 0 14px;
+}
+
 .field-row .field {
   margin-bottom: 0;
 }
@@ -588,6 +596,45 @@ textarea {
   background: transparent;
   color: var(--muted);
   padding: 8px 0;
+}
+
+.problem-list li.problem-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.problem-item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.price-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.price-pick-search,
+.price-pick-select {
+  min-width: 0;
+  flex: 1 1 180px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  background: #fff;
+}
+
+.price-pick .btn {
+  flex: 0 0 auto;
+}
+
+.price-pick-hint {
+  margin: 0;
+  font-size: 0.82rem;
 }
 
 .tag {
@@ -939,6 +986,7 @@ code {
   .preview-foot .btn-row { width: 100%; }
   .preview-foot .btn { flex: 1; }
   .bottom-panel { margin-top: 12px; }
+  .price-pick .btn { width: 100%; }
   .subtabs {
     overflow-x: auto;
     flex-wrap: nowrap;
