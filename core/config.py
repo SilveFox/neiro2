@@ -37,6 +37,15 @@ OLLAMA_TIMEOUT_SEC = 300
 # False = compact prompt (~1/4); True = archived full prompt in prompt_full.py
 USE_FULL_PROMPT = False
 
+# Security helpers (core/security.py): path allowlist, rate limit, extra_prompt filter.
+# Auth login/password — на уровне сервера/прокси, не в приложении.
+ALLOW_EXTRA_PROMPT = True
+EXTRA_PROMPT_MAX_LEN = 500
+PARSE_RATE_LIMIT = 8
+PARSE_RATE_WINDOW_SEC = 60.0
+UVICORN_HOST = "127.0.0.1"
+UVICORN_PORT = 8000
+
 # Данные!B:C — VLOOKUP прайса (новое)
 PRICE_NAME_COL = 2  # B
 PRICE_VALUE_COL = 3  # C (новое)

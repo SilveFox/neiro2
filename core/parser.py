@@ -14,6 +14,7 @@ import requests
 
 from core import config
 from core.prompt import build_system_prompt
+from core.security import safe_worker_label, sanitize_extra_prompt
 
 REQUIRED_JOB_KEYS = {"raw_task_name", "job_description", "service_type", "volume", "unit"}
 
@@ -671,16 +672,17 @@ def validate_report(parsed: dict[str, Any]) -> dict[str, Any]:
         if not members:
             raise ParseError("Пустые members / raw_worker_name")
         name = ", ".join(members)
+        label = safe_worker_label(name, members)
         jobs = w.get("performed_jobs")
         if not isinstance(jobs, list) or not jobs:
-            raise ParseError(f"У {name} нет performed_jobs")
+            raise ParseError(f"У {label} нет performed_jobs")
         #(Правка в коде Новиков С.С 29.07)
         clean_jobs = []
         for j in jobs:
             if not isinstance(j, dict):
-                raise ParseError(f"Работа у {name} не объект")
+                raise ParseError(f"Работа у {label} не объект")
             if not REQUIRED_JOB_KEYS.issubset(j.keys()):
-                raise ParseError(f"У {name} неполная структура работы: {j}")
+                raise ParseError(f"У {label} неполная структура работы")
             vol = j["volume"]
 
             # (правка Новиков С.С. 29.07.2026) защита от None и пустых значений от модели
@@ -701,11 +703,9 @@ def validate_report(parsed: dict[str, Any]) -> dict[str, Any]:
                         num_s = m.group(1).replace(",", ".")
                         vol = float(num_s) if "." in num_s else int(num_s)
                     else:
-                        raise ParseError(f"Некорректный volume у {name}: {j['volume']}")
+                        raise ParseError(f"Некорректный volume у {label}")
             if not isinstance(vol, (int, float)):
-                raise ParseError(f"volume должен быть числом у {name}")
-            if not isinstance(vol, (int, float)):
-                raise ParseError(f"volume должен быть числом у {name}")
+                raise ParseError(f"volume должен быть числом у {label}")
             raw_name, job_desc, vol, unit = strip_volume_from_task_fields(
                 str(j["raw_task_name"]).strip(),
                 str(j["job_description"]).strip(),
@@ -809,8 +809,9 @@ def apply_service_type_from_sections(
 def call_ollama(report_text: str, extra_prompt: str = "", timeout: int | None = None) -> str:
     system = build_system_prompt()
     user_parts = []
-    if extra_prompt.strip():
-        user_parts.append(f"ДОПОЛНИТЕЛЬНАЯ ИНСТРУКЦИЯ:\n{extra_prompt.strip()}")
+    safe_extra = sanitize_extra_prompt(extra_prompt)
+    if safe_extra:
+        user_parts.append(f"ДОПОЛНИТЕЛЬНАЯ ИНСТРУКЦИЯ:\n{safe_extra}")
     user_parts.append(
         "Верни ТОЛЬКО JSON по схеме (workers[]). Без Markdown.\n\n"
         f"ОТЧЕТ:\n{report_text.strip()}"

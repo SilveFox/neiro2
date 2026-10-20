@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import traceback
+import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -25,6 +25,7 @@ from core.pricing import (
     save_aliases_document,
     save_price_items,
 )
+from core.security import PARSE_RATE_LIMITER, ensure_workbook_path_allowed
 from core.workbook_factory import (
     WorkbookExistsError,
     activate_year_month,
@@ -35,11 +36,27 @@ from core.workbook_factory import (
     year_month_from_path,
 )
 
+log = logging.getLogger("montazhpro.api")
+
 app = FastAPI(title="МонтажПро", version="1.0.0")
 
 STATIC = config.STATIC_DIR
 STATIC.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+
+
+def _client_error(exc: BaseException) -> str:
+    """Public error text without stack traces."""
+    return str(exc) or exc.__class__.__name__
+
+
+def _check_parse_rate(request: Request) -> None:
+    host = request.client.host if request.client else "unknown"
+    if not PARSE_RATE_LIMITER.allow(host):
+        raise HTTPException(
+            status_code=429,
+            detail="Слишком много запросов разбора. Подождите около минуты.",
+        )
 
 
 class ParseRequest(BaseModel):
@@ -193,7 +210,8 @@ def api_workbook_new(body: NewMonthRequest):
     except WorkbookExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        log.exception("workbook/new failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
 @app.post("/api/workbook/activate")
@@ -205,6 +223,7 @@ def api_workbook_activate(body: ActivateRequest):
             path = Path(body.path)
             if not path.is_absolute():
                 path = (config.ROOT / path).resolve()
+            path = ensure_workbook_path_allowed(path)
             meta = set_active_workbook(path, year_month_from_path(path))
         else:
             raise HTTPException(400, "Укажите year_month или path")
@@ -216,7 +235,8 @@ def api_workbook_activate(body: ActivateRequest):
 
 
 @app.post("/api/parse")
-def api_parse(body: ParseRequest):
+def api_parse(body: ParseRequest, request: Request):
+    _check_parse_rate(request)
     try:
         report = parse_report_text(
             body.report_text,
@@ -232,19 +252,24 @@ def api_parse(body: ParseRequest):
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"{exc}\n{traceback.format_exc()}") from exc
+        log.exception("parse failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
 @app.post("/api/parse-file")
 async def api_parse_file(
+    request: Request,
     file: UploadFile = File(...),
     report_date: str | None = None,
     extra_prompt: str = "",
 ):
+    _check_parse_rate(request)
     data = await file.read()
     if not data:
         raise HTTPException(422, "Пустой файл")
-    text = _extract_upload_text(file.filename or "report.txt", data).strip()
+    # Use basename only — ignore path components in client filename
+    safe_name = Path(file.filename or "report.txt").name
+    text = _extract_upload_text(safe_name, data).strip()
     if not text:
         raise HTTPException(422, "Не удалось извлечь текст из файла")
     try:
@@ -263,7 +288,8 @@ async def api_parse_file(
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"{exc}\n{traceback.format_exc()}") from exc
+        log.exception("parse-file failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
 @app.post("/api/calculate")
@@ -308,7 +334,8 @@ def api_reports_save(body: SaveReportDbRequest):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        log.exception("reports/save failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
 @app.get("/api/reports")
@@ -350,12 +377,17 @@ def api_excel(body: ExcelRequest):
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        log.exception("excel write failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
 @app.get("/api/download-excel")
 def download_excel():
     path = ensure_working_workbook()
+    try:
+        path = ensure_workbook_path_allowed(Path(path), require_month_name=False)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(404, str(exc)) from exc
     return FileResponse(
         path,
         filename=path.name,
@@ -382,7 +414,8 @@ def api_price_put(body: PriceSaveRequest):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(500, str(exc)) from exc
+        log.exception("price put failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
 @app.get("/api/aliases")
@@ -408,7 +441,8 @@ def api_aliases_put(body: AliasesSaveRequest):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(500, str(exc)) from exc
+        log.exception("aliases put failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
 @app.post("/api/aliases/link")
@@ -419,7 +453,8 @@ def api_aliases_link(body: AliasLinkRequest):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(500, str(exc)) from exc
+        log.exception("aliases link failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
 @app.get("/api/employees")
@@ -465,7 +500,8 @@ def api_model_put(body: ModelSaveRequest):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(500, str(exc)) from exc
+        log.exception("model put failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
 @app.get("/api/excel-log")
@@ -474,13 +510,29 @@ def api_excel_log():
         ensure_working_workbook()
         return {"ok": True, **get_written_log()}
     except Exception as exc:
-        raise HTTPException(500, str(exc)) from exc
+        log.exception("excel-log failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
+
+
+@app.get("/api/security-status")
+def api_security_status():
+    """Non-secret status: bind host, rate limit, extra_prompt (auth — на прокси/сервере)."""
+    return {
+        "ok": True,
+        "auth": "external",
+        "bind_host": getattr(config, "UVICORN_HOST", "127.0.0.1"),
+        "allow_extra_prompt": bool(getattr(config, "ALLOW_EXTRA_PROMPT", True)),
+        "parse_rate_limit": getattr(config, "PARSE_RATE_LIMIT", 8),
+        "parse_rate_window_sec": getattr(config, "PARSE_RATE_WINDOW_SEC", 60),
+    }
 
 
 def main():
     import uvicorn
 
-    uvicorn.run("web.main:app", host="127.0.0.1", port=8000, reload=False)
+    host = str(getattr(config, "UVICORN_HOST", "127.0.0.1") or "127.0.0.1")
+    port = int(getattr(config, "UVICORN_PORT", 8000) or 8000)
+    uvicorn.run("web.main:app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":

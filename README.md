@@ -133,6 +133,13 @@ python scripts/test_save_db_report.py
 
 Отчёт: `docs/Otchet_test_sohranenie_BD.docx`, детали: `docs/_test_save_db_result.json`.
 
+## Безопасность (кратко)
+
+- Вход по логину/паролю — на уровне сервера/прокси (в приложении отдельного токена нет).
+- Активация/скачивание Excel только из `data/workbooks` (имя `SE_Lukhovitsy_ГГГГ-ММ.xlsx` при activate).
+- Rate limit на `/api/parse` и `/api/parse-file`; `extra_prompt` фильтруется (deny-list); ошибки без traceback клиенту.
+- Статус: `GET /api/security-status`. Отчёты: `docs/Otchet_bezopasnost_LLM_MontazhPro.docx`, `docs/Otchet_ispravleniya_bezopasnosti_MontazhPro.docx`.
+
 ## Веб-слой
 
 | Путь | Роль |
@@ -141,6 +148,7 @@ python scripts/test_save_db_report.py
 | `web/static/index.html` | Разметка МонтажПро |
 | `web/static/app.js` | Навигация, предпросмотр, CRUD прайса/алиасов |
 | `web/static/styles.css` | Светлая синяя тема |
+| `core/security.py` | Rate limit, allowlist путей, sanitize extra_prompt |
 
 ### API
 
