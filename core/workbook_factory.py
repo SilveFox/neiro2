@@ -16,10 +16,55 @@ from core import config
 
 YEAR_MONTH_RE = re.compile(r"^(\d{4})-(\d{2})$")
 _EXTERNAL_REF_RE = re.compile(r"\[\d+\]")
+# <title>_YYYY-MM.xlsx | YYYY-MM.xlsx | legacy SE_Lukhovitsy[_title]_YYYY-MM.xlsx
+_BOOK_NAME_RE = re.compile(
+    r"^(?:SE_Lukhovitsy_)?(?:(?P<title>.+)_)?(?P<ym>\d{4}-\d{2})\.xlsx$",
+    re.IGNORECASE,
+)
+_TITLE_SAFE_RE = re.compile(r"[^A-Za-zА-Яа-яЁё0-9_-]+")
 
 
 class WorkbookExistsError(FileExistsError):
     pass
+
+
+def sanitize_workbook_title(title: str | None) -> str:
+    """
+    Optional human title for the file name (no path, no extension).
+    Empty → default file YYYY-MM.xlsx; with title → <title>_YYYY-MM.xlsx.
+    """
+    raw = (title or "").strip()
+    if not raw:
+        return ""
+    # Drop extension if user pasted a full filename
+    if raw.lower().endswith(".xlsx"):
+        raw = raw[:-5]
+    raw = raw.replace("\\", "_").replace("/", "_").replace("..", "_")
+    # Collapse spaces/punctuation to underscore
+    slug = _TITLE_SAFE_RE.sub("_", raw).strip("_")
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    # Drop legacy prefix if pasted into the name field
+    while slug.lower().startswith("se_lukhovitsy_"):
+        slug = slug[14:].lstrip("_")
+    if slug.lower() == "se_lukhovitsy":
+        raise ValueError("Укажите своё название файла без SE_Lukhovitsy")
+    if not slug:
+        raise ValueError("Название файла пустое после очистки")
+    if len(slug) > 60:
+        slug = slug[:60].rstrip("_")
+    # Avoid colliding with bare month token
+    if YEAR_MONTH_RE.match(slug):
+        raise ValueError("Название не должно быть только датой ГГГГ-ММ")
+    return slug
+
+
+def title_from_workbook_name(name: str) -> str:
+    """Extract custom title from basename, or '' for default month books."""
+    m = _BOOK_NAME_RE.match(Path(name).name)
+    if not m:
+        return ""
+    return (m.group("title") or "").strip("_")
 
 
 def sanitize_workbook(wb: openpyxl.Workbook) -> None:
@@ -53,8 +98,13 @@ def sanitize_workbook(wb: openpyxl.Workbook) -> None:
                 pass
 
 
-def month_workbook_path(year: int, month: int) -> Path:
-    return config.WORKBOOKS_DIR / f"SE_Lukhovitsy_{year:04d}-{month:02d}.xlsx"
+def month_workbook_path(year: int, month: int, title: str | None = None) -> Path:
+    """Default or titled monthly path under data/workbooks: [title_]YYYY-MM.xlsx."""
+    ym = f"{year:04d}-{month:02d}"
+    slug = sanitize_workbook_title(title) if title else ""
+    if slug:
+        return config.WORKBOOKS_DIR / f"{slug}_{ym}.xlsx"
+    return config.WORKBOOKS_DIR / f"{ym}.xlsx"
 
 
 def written_log_for(workbook_path: Path) -> Path:
@@ -63,20 +113,30 @@ def written_log_for(workbook_path: Path) -> Path:
 
 def year_month_from_path(path: Path) -> str | None:
     """Extract YYYY-MM from monthly workbook filename (UI label / routing key)."""
-    m = re.search(r"(?:^|_)(\d{4}-\d{2})\.xlsx$", path.name, flags=re.IGNORECASE)
-    return m.group(1) if m else None
+    m = _BOOK_NAME_RE.match(path.name)
+    if m:
+        return m.group("ym")
+    m2 = re.search(r"(?:^|_)(\d{4}-\d{2})\.xlsx$", path.name, flags=re.IGNORECASE)
+    return m2.group(1) if m2 else None
 
 
-def workbook_label(year_month: str | None, path: Path | str | None = None) -> str:
-    """Human-facing table name: always YYYY-MM when known."""
+def workbook_label(
+    year_month: str | None,
+    path: Path | str | None = None,
+    title: str | None = None,
+) -> str:
+    """Human-facing table name: YYYY-MM or YYYY-MM — Title."""
     ym = (year_month or "").strip()
-    if YEAR_MONTH_RE.match(ym):
-        return ym
-    if path is not None:
+    if not YEAR_MONTH_RE.match(ym) and path is not None:
         extracted = year_month_from_path(Path(path))
         if extracted:
-            return extracted
-    return ym or (Path(path).name if path else "")
+            ym = extracted
+    slug = (title or "").strip()
+    if not slug and path is not None:
+        slug = title_from_workbook_name(Path(path).name)
+    if YEAR_MONTH_RE.match(ym):
+        return f"{ym} — {slug}" if slug else ym
+    return ym or slug or (Path(path).name if path else "")
 
 
 def get_active_meta() -> dict[str, Any] | None:
@@ -95,9 +155,11 @@ def get_active_meta() -> dict[str, Any] | None:
         return None
     data["path"] = str(path)
     ym = data.get("year_month") or year_month_from_path(path) or ""
+    title = data.get("title") or title_from_workbook_name(path.name)
     data["year_month"] = ym
+    data["title"] = title
     data["name"] = path.name
-    data["label"] = workbook_label(ym, path)
+    data["label"] = workbook_label(ym, path, title)
     return data
 
 
@@ -106,11 +168,13 @@ def set_active_workbook(path: Path, year_month: str | None = None) -> dict[str, 
     if not path.exists():
         raise FileNotFoundError(f"Книга не найдена: {path}")
     ym = year_month or year_month_from_path(path) or ""
+    title = title_from_workbook_name(path.name)
     meta = {
         "path": str(path),
         "year_month": ym,
+        "title": title,
         "name": path.name,
-        "label": workbook_label(ym, path),
+        "label": workbook_label(ym, path, title),
     }
     config.ACTIVE_WORKBOOK_META.write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -154,14 +218,18 @@ def list_month_workbooks() -> list[dict[str, Any]]:
     active = get_active_meta()
     active_path = Path(active["path"]).resolve() if active else None
     items: list[dict[str, Any]] = []
-    for path in sorted(config.WORKBOOKS_DIR.glob("SE_Lukhovitsy_????-??.xlsx"), reverse=True):
+    for path in sorted(config.WORKBOOKS_DIR.glob("*.xlsx"), reverse=True):
+        if not _BOOK_NAME_RE.match(path.name):
+            continue
         ym = year_month_from_path(path) or ""
+        title = title_from_workbook_name(path.name)
         items.append(
             {
                 "path": str(path.resolve()),
                 "name": path.name,
                 "year_month": ym,
-                "label": workbook_label(ym, path),
+                "title": title,
+                "label": workbook_label(ym, path, title),
                 "active": active_path is not None and path.resolve() == active_path,
             }
         )
@@ -238,9 +306,11 @@ def create_month_workbook(
     year: int,
     month: int,
     activate: bool = True,
+    title: str | None = None,
 ) -> Path:
     """
     Create an empty monthly workbook from the source template.
+    Optional title → <title>_YYYY-MM.xlsx; without title → YYYY-MM.xlsx.
     Raises WorkbookExistsError if the target file already exists.
     """
     if not (1 <= month <= 12):
@@ -248,10 +318,12 @@ def create_month_workbook(
     if year < 2000 or year > 2100:
         raise ValueError("year out of range")
 
+    slug = sanitize_workbook_title(title) if title else ""
     config.WORKBOOKS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = month_workbook_path(year, month)
+    dest = month_workbook_path(year, month, slug or None)
     if dest.exists():
-        raise WorkbookExistsError(f"Месяц {year:04d}-{month:02d} уже существует")
+        label = f"{slug}_{year:04d}-{month:02d}" if slug else f"{year:04d}-{month:02d}"
+        raise WorkbookExistsError(f"Таблица {label} уже существует")
 
     if not config.SOURCE_WORKBOOK.exists():
         raise FileNotFoundError(f"Нет исходного Excel: {config.SOURCE_WORKBOOK}")
@@ -284,15 +356,55 @@ def create_month_workbook(
     return dest.resolve()
 
 
-def activate_year_month(year_month: str) -> dict[str, Any]:
+def find_workbooks_for_month(year_month: str) -> list[Path]:
+    """All month books for YYYY-MM (bare YYYY-MM.xlsx first, then titled / legacy)."""
     m = YEAR_MONTH_RE.match(year_month.strip())
     if not m:
         raise ValueError("Ожидается формат YYYY-MM")
     year, month = int(m.group(1)), int(m.group(2))
-    path = month_workbook_path(year, month)
-    if not path.exists():
+    ym = f"{year:04d}-{month:02d}"
+    default = month_workbook_path(year, month)
+    found: list[Path] = []
+    if default.exists():
+        found.append(default.resolve())
+    # Titled: Name_YYYY-MM.xlsx; legacy: SE_Lukhovitsy[_Name]_YYYY-MM.xlsx
+    for path in sorted(config.WORKBOOKS_DIR.glob(f"*_{ym}.xlsx")):
+        if not _BOOK_NAME_RE.match(path.name):
+            continue
+        resolved = path.resolve()
+        if resolved not in found:
+            found.append(resolved)
+    legacy_bare = config.WORKBOOKS_DIR / f"SE_Lukhovitsy_{ym}.xlsx"
+    if legacy_bare.exists():
+        resolved = legacy_bare.resolve()
+        if resolved not in found:
+            found.append(resolved)
+    return found
+
+
+def activate_year_month(year_month: str) -> dict[str, Any]:
+    paths = find_workbooks_for_month(year_month)
+    if not paths:
         raise FileNotFoundError(f"Нет файла для месяца {year_month}")
-    return set_active_workbook(path, year_month)
+    # Prefer default unnamed book if several share the month
+    return set_active_workbook(paths[0], year_month)
+
+
+def activate_workbook_name(name: str) -> dict[str, Any]:
+    """Activate by basename inside data/workbooks (path traversal blocked)."""
+    base = Path(name).name
+    if base != name.replace("\\", "/").split("/")[-1]:
+        raise ValueError("Укажите только имя файла")
+    path = (config.WORKBOOKS_DIR / base).resolve()
+    try:
+        path.relative_to(config.WORKBOOKS_DIR.resolve())
+    except ValueError as exc:
+        raise ValueError("Разрешены только файлы внутри data/workbooks") from exc
+    if not _BOOK_NAME_RE.match(path.name):
+        raise ValueError("Недопустимое имя книги")
+    if not path.is_file():
+        raise FileNotFoundError(f"Книга не найдена: {base}")
+    return set_active_workbook(path, year_month_from_path(path))
 
 
 def ensure_month_workbook(year: int, month: int, activate: bool = True) -> tuple[Path, bool]:
@@ -317,7 +429,7 @@ def ensure_month_workbook(year: int, month: int, activate: bool = True) -> tuple
 
 
 def workbook_for_report_date(report_date: str, activate: bool = True) -> tuple[Path, bool]:
-    """Pick / create SE_Lukhovitsy_YYYY-MM.xlsx from report_date (YYYY-MM-DD)."""
+    """Pick / create YYYY-MM.xlsx from report_date (YYYY-MM-DD)."""
     try:
         dt = date.fromisoformat(report_date[:10])
     except ValueError as exc:

@@ -15,7 +15,11 @@ from core import config
 
 log = logging.getLogger("montazhpro.security")
 
-_MONTH_BOOK_RE = re.compile(r"^SE_Lukhovitsy_\d{4}-\d{2}\.xlsx$", re.IGNORECASE)
+# YYYY-MM.xlsx | <name>_YYYY-MM.xlsx | legacy SE_Lukhovitsy[_name]_YYYY-MM.xlsx
+_MONTH_BOOK_RE = re.compile(
+    r"^(?:SE_Lukhovitsy_)?(?:[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_-]{0,60}_)?\d{4}-\d{2}\.xlsx$",
+    re.IGNORECASE,
+)
 _INJECTION_RE = re.compile(
     r"(ignore\s+(all\s+)?(previous|prior)\s+instruction|"
     r"system\s*prompt|jailbreak|\bDAN\b|"
@@ -69,7 +73,7 @@ def safe_worker_label(name: str, members: list | None = None) -> str:
 def ensure_workbook_path_allowed(path: Path, *, require_month_name: bool = True) -> Path:
     """
     Only files under data/workbooks may be activated/downloaded.
-    When require_month_name=True, also enforce SE_Lukhovitsy_YYYY-MM.xlsx.
+    When require_month_name=True, enforce [name_]YYYY-MM.xlsx (legacy SE_Lukhovitsy_* ok).
     Raises ValueError / FileNotFoundError.
     """
     root = config.WORKBOOKS_DIR.resolve()
@@ -79,7 +83,9 @@ def ensure_workbook_path_allowed(path: Path, *, require_month_name: bool = True)
     except ValueError as exc:
         raise ValueError("Разрешены только файлы внутри каталога data/workbooks") from exc
     if require_month_name and not _MONTH_BOOK_RE.match(resolved.name):
-        raise ValueError("Ожидается файл вида SE_Lukhovitsy_ГГГГ-ММ.xlsx")
+        raise ValueError(
+            "Ожидается файл вида ГГГГ-ММ.xlsx или <название>_ГГГГ-ММ.xlsx"
+        )
     if not resolved.is_file():
         raise FileNotFoundError(f"Книга не найдена: {resolved.name}")
     return resolved

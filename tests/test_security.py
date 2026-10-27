@@ -71,11 +71,29 @@ class WorkbookPathTests(unittest.TestCase):
     def test_accepts_month_book(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            book = root / "2026-10.xlsx"
+            book.write_bytes(b"PK")
+            with mock.patch.object(config, "WORKBOOKS_DIR", root):
+                got = ensure_workbook_path_allowed(book)
+                self.assertEqual(got.name, "2026-10.xlsx")
+
+    def test_accepts_titled_month_book(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            book = root / "Garantiya_2026-10.xlsx"
+            book.write_bytes(b"PK")
+            with mock.patch.object(config, "WORKBOOKS_DIR", root):
+                got = ensure_workbook_path_allowed(book)
+                self.assertEqual(got.name, book.name)
+
+    def test_accepts_legacy_se_lukhovitsy_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
             book = root / "SE_Lukhovitsy_2026-10.xlsx"
             book.write_bytes(b"PK")
             with mock.patch.object(config, "WORKBOOKS_DIR", root):
                 got = ensure_workbook_path_allowed(book)
-                self.assertEqual(got.name, "SE_Lukhovitsy_2026-10.xlsx")
+                self.assertEqual(got.name, book.name)
 
 
 class RateLimitTests(unittest.TestCase):

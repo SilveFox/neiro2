@@ -37,7 +37,7 @@ pip install -r requirements.txt
 python run_web.py
 ```
 
-или `run_web.bat`. Откройте http://127.0.0.1:8000
+или `run_web.bat`. Откройте http://127.0.0.1:8000 (слушает localhost; внешний доступ — через прокси с логином/паролем, см. [Безопасность](#безопасность)).
 
 Типовой сценарий:
 
@@ -48,9 +48,11 @@ python run_web.py
 5. При необходимости **Сохранить в БД** — архив отчёта с читаемыми ФИО и работами (не заменяет Excel).
 6. **Формировать отчёт** — дозапись в книгу нужного месяца.
 
-На вкладке **Настройки**: блок «Создать новую таблицу» (пустой месяц Excel) и «Заполнить или изменить таблицу» (активировать, скачать, дозаполнить через «Отчёт»). UI адаптирован под узкие экраны (меню-бургер ≤980px).
+На вкладке **Настройки**: блок «Создать новую таблицу» (месяц + **название файла**) и «Заполнить или изменить таблицу» (активировать, скачать, дозаполнить через «Отчёт»). UI адаптирован под узкие экраны (меню-бургер ≤980px).
 
-Если файла месяца нет, он **создаётся из шаблона и делается активным**. Запись идёт в `SE_Lukhovitsy_ГГГГ-ММ.xlsx` по дате отчёта, а не обязательно в ранее выбранный «активный» месяц.
+Имена файлов: с названием — `<имя>_ГГГГ-ММ.xlsx` (в списках: `ГГГГ-ММ — имя`); без названия — `ГГГГ-ММ.xlsx`. Если файла месяца нет при записи отчёта, он **создаётся из шаблона** как `ГГГГ-ММ.xlsx` и делается активным.
+
+Пошаговая инструкция по новому месяцу: вкладка **Инструкция** (§6) и Word `docs/Instrukciya_sozdanie_novogo_mesyaca.docx`.
 
 Flet-прототип того же пайплайна: `python app.py`.
 
@@ -58,7 +60,7 @@ Flet-прототип того же пайплайна: `python app.py`.
 
 | Файл | Назначение |
 |------|------------|
-| `config.py` | Пути, модель Ollama, колонки Excel |
+| `config.py` | Пути, модель Ollama, колонки Excel, параметры безопасности (bind, rate limit, extra_prompt) |
 | `prompt.py` | Системный промпт: бригады, объёмы, схема JSON, список сотрудников |
 | `parser.py` | Предобработка текста, вызов Ollama, валидация JSON, позиция объёма, бригады, адреса не как ФИО |
 | `pricing.py` | Прайс, алиасы, нечёткий поиск, `amount` / `total` / `per_person` / `grand_total` |
@@ -66,6 +68,7 @@ Flet-прототип того же пайплайна: `python app.py`.
 | `workbook_factory.py` | Создание/активация месяца, `ensure_month_workbook` по дате отчёта |
 | `report_db.py` | Сохранение отчёта в SQLite: заголовок, workers, jobs (читаемые строки) |
 | `model_settings.py` | Выбор модели Ollama (Настройки), `data/model_settings.json` |
+| `security.py` | Allowlist путей Excel, rate limit parse, sanitize `extra_prompt`, маскировка ФИО в ошибках |
 | `pipeline.py` | Программный вызов parse → calc → excel |
 
 ### Парсер
@@ -99,7 +102,7 @@ Flet-прототип того же пайплайна: `python app.py`.
 | **01…31** | Дневные блоки работ |
 | **Шаблон** | Образец пустого дня |
 
-Файлы: `data/workbooks/SE_Lukhovitsy_YYYY-MM.xlsx`, лог дублей `*.written.json`, указатель активной книги `data/active_workbook.json`.  
+Файлы: `data/workbooks/[название_]YYYY-MM.xlsx`, лог дублей `*.written.json`, указатель активной книги `data/active_workbook.json`.  
 Дубликат: `report_date` + хэш текста. Бригада — один блок, работы один раз, ЗП делится поровну (`I = H/N`).
 
 **Важно:** при записи в Excel тариф и ЗП сохраняются **числами из того же расчёта, что в предпросмотре** (JSON-прайс). Так файл сразу открывается с суммами: openpyxl при сохранении сбрасывает кэш формул, и «живые» VLOOKUP выглядели пустыми. Прайс на листе «Данные» и `price_list.json` лучше держать согласованными.
@@ -125,7 +128,15 @@ FROM report_jobs
 ORDER BY id DESC;
 ```
 
-E2E-тест модуля (нужен Ollama):
+Полное функциональное + LLM-тестирование (нужен Ollama):
+
+```bash
+python scripts/full_functional_llm_test.py
+```
+
+Отчёт: `docs/Otchet_polnoe_testirovanie_MontazhPro.docx` (+ `.md`, `_full_test_results.json`).
+
+E2E-тест сохранения в БД:
 
 ```bash
 python scripts/test_save_db_report.py
@@ -133,12 +144,22 @@ python scripts/test_save_db_report.py
 
 Отчёт: `docs/Otchet_test_sohranenie_BD.docx`, детали: `docs/_test_save_db_result.json`.
 
-## Безопасность (кратко)
+## Безопасность
 
-- Вход по логину/паролю — на уровне сервера/прокси (в приложении отдельного токена нет).
-- Активация/скачивание Excel только из `data/workbooks` (имя `SE_Lukhovitsy_ГГГГ-ММ.xlsx` при activate).
-- Rate limit на `/api/parse` и `/api/parse-file`; `extra_prompt` фильтруется (deny-list); ошибки без traceback клиенту.
-- Статус: `GET /api/security-status`. Отчёты: `docs/Otchet_bezopasnost_LLM_MontazhPro.docx`, `docs/Otchet_ispravleniya_bezopasnosti_MontazhPro.docx`.
+Реализованы рекомендации аудита LLM/API. **Вход по логину и паролю** обеспечивается на стороне сервера или reverse-proxy; **в приложении отдельного API-токена нет** (настройка токена в UI убрана).
+
+| Мера | Как устроено |
+|------|----------------|
+| Сетевой доступ | Uvicorn по умолчанию на `127.0.0.1` (`UVICORN_HOST` / `UVICORN_PORT` в `core/config.py`). Снаружи приложение открывают через прокси с auth. |
+| Пути Excel | Activate/download только внутри `data/workbooks`; имя `[название_]ГГГГ-ММ.xlsx` (`ensure_workbook_path_allowed`). |
+| Rate limit | `/api/parse` и `/api/parse-file`: по умолчанию 8 запросов / 60 с с одного IP (`PARSE_RATE_LIMIT`, `PARSE_RATE_WINDOW_SEC`). Ответ `429`. |
+| `extra_prompt` | Deny-list инъекций, обрезка длины (`EXTRA_PROMPT_MAX_LEN`), префикс schema-lock. Отключить: `ALLOW_EXTRA_PROMPT=False` или env `MONTAGEPRO_ALLOW_EXTRA_PROMPT=0`. |
+| Ошибки клиенту | Без traceback; длинные/подозрительные списки ФИО в деталях ошибок маскируются (`safe_worker_label`). |
+| Статус | `GET /api/security-status` — `auth: external`, bind host, флаги rate limit / extra_prompt (без секретов). |
+
+Код: `core/security.py`, настройки в `core/config.py`. Тесты: `tests/test_security.py`.
+
+Отчёты аудита и исправлений: `docs/Otchet_bezopasnost_LLM_MontazhPro.docx`, `docs/Otchet_ispravleniya_bezopasnosti_MontazhPro.docx`.
 
 ## Веб-слой
 
@@ -148,7 +169,6 @@ python scripts/test_save_db_report.py
 | `web/static/index.html` | Разметка МонтажПро |
 | `web/static/app.js` | Навигация, предпросмотр, CRUD прайса/алиасов |
 | `web/static/styles.css` | Светлая синяя тема |
-| `core/security.py` | Rate limit, allowlist путей, sanitize extra_prompt |
 
 ### API
 
@@ -156,6 +176,7 @@ python scripts/test_save_db_report.py
 |-------|------|------------|
 | GET | `/` | UI |
 | GET | `/api/health` | Статус, модель, активная книга |
+| GET | `/api/security-status` | Несекретный статус защиты (auth external, rate limit) |
 | GET/POST | `/api/workbook/list`, `/new`, `/activate` | Месячные книги |
 | POST | `/api/parse` | Текст → JSON + расчёт |
 | POST | `/api/parse-file` | Файл → разбор |
@@ -186,7 +207,7 @@ python scripts/test_save_db_report.py
 Без Ollama:
 
 ```bash
-python -m unittest tests.test_core tests.test_month_workbook -v
+python -m unittest tests.test_core tests.test_month_workbook tests.test_security -v
 ```
 
 Сравнение полного и компактного промпта (нужен Ollama):
@@ -197,7 +218,7 @@ python tests/test_prompt_compact.py
 
 Результат пишется в `tests/_prompt_compact_test.json`.
 
-Покрытие: валидация JSON, объёмы, бригады, алиасы, расчёт, дозапись и дедупликация Excel, создание месяца, запись по дате отчёта.
+Покрытие: валидация JSON, объёмы, бригады, алиасы, расчёт, дозапись и дедупликация Excel, создание месяца, запись по дате отчёта; security — allowlist путей, rate limit, deny-list `extra_prompt`, маскировка ФИО в ошибках.
 
 ## Git
 

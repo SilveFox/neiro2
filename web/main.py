@@ -28,6 +28,7 @@ from core.pricing import (
 from core.security import PARSE_RATE_LIMITER, ensure_workbook_path_allowed
 from core.workbook_factory import (
     WorkbookExistsError,
+    activate_workbook_name,
     activate_year_month,
     create_month_workbook,
     get_active_meta,
@@ -75,11 +76,13 @@ class NewMonthRequest(BaseModel):
     year: int
     month: int
     activate: bool = True
+    title: str | None = Field(default=None, max_length=80)
 
 
 class ActivateRequest(BaseModel):
     year_month: str | None = None
     path: str | None = None
+    name: str | None = None
 
 
 class PriceSaveRequest(BaseModel):
@@ -199,16 +202,28 @@ def api_workbook_list():
 @app.post("/api/workbook/new")
 def api_workbook_new(body: NewMonthRequest):
     try:
-        path = create_month_workbook(body.year, body.month, activate=body.activate)
+        path = create_month_workbook(
+            body.year,
+            body.month,
+            activate=body.activate,
+            title=body.title,
+        )
+        meta = get_active_meta() if body.activate else None
+        ym = f"{body.year:04d}-{body.month:02d}"
+        label = (meta or {}).get("label") or ym
         return {
             "ok": True,
             "path": str(path),
-            "year_month": f"{body.year:04d}-{body.month:02d}",
-            "active": get_active_meta(),
-            "message": f"Создан пустой месяц {body.year:04d}-{body.month:02d}",
+            "name": path.name,
+            "year_month": ym,
+            "title": (meta or {}).get("title") or "",
+            "active": meta,
+            "message": f"Создана таблица «{label}» ({path.name})",
         }
     except WorkbookExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         log.exception("workbook/new failed")
         raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
@@ -217,16 +232,18 @@ def api_workbook_new(body: NewMonthRequest):
 @app.post("/api/workbook/activate")
 def api_workbook_activate(body: ActivateRequest):
     try:
-        if body.year_month:
-            meta = activate_year_month(body.year_month)
+        if body.name:
+            meta = activate_workbook_name(body.name)
         elif body.path:
             path = Path(body.path)
             if not path.is_absolute():
                 path = (config.ROOT / path).resolve()
             path = ensure_workbook_path_allowed(path)
             meta = set_active_workbook(path, year_month_from_path(path))
+        elif body.year_month:
+            meta = activate_year_month(body.year_month)
         else:
-            raise HTTPException(400, "Укажите year_month или path")
+            raise HTTPException(400, "Укажите name, path или year_month")
         return {"ok": True, "active": meta}
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

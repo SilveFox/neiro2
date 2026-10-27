@@ -24,6 +24,7 @@
   const problemList = $("problemList");
   const sessionHistory = $("sessionHistory");
   const newMonth = $("newMonth");
+  const newWorkbookTitle = $("newWorkbookTitle");
   const monthSelect = $("monthSelect");
   const monthSelectSettings = $("monthSelectSettings");
   const activeWorkbookLabel = $("activeWorkbookLabel");
@@ -31,6 +32,8 @@
   const btnNewMonth = $("btnNewMonth");
   const btnActivateMonth = $("btnActivateMonth");
   const btnEditTable = $("btnEditTable");
+  /** Cache of listed workbooks by select value (filename). */
+  let workbookItemsByName = {};
   const priceBody = $("priceBody");
   const priceSearch = $("priceSearch");
   const priceStatus = $("priceStatus");
@@ -670,11 +673,17 @@
   /* -------- workbooks / settings -------- */
   function workbookDisplayName(item) {
     if (!item) return "—";
-    const ym = String(item.year_month || item.label || "").trim();
-    if (/^\d{4}-\d{2}$/.test(ym)) return ym;
+    if (item.label) return String(item.label);
+    const ym = String(item.year_month || "").trim();
+    const title = String(item.title || "").trim();
+    if (/^\d{4}-\d{2}$/.test(ym)) return title ? `${ym} — ${title}` : ym;
     const fromName = String(item.name || item.path || "").match(/(\d{4}-\d{2})(?:\.xlsx)?$/i);
-    if (fromName) return fromName[1];
-    return item.label || item.year_month || item.name || "—";
+    if (fromName) return title ? `${fromName[1]} — ${title}` : fromName[1];
+    return item.name || "—";
+  }
+
+  function workbookSelectValue(item) {
+    return String(item.name || item.year_month || "").trim();
   }
 
   function updateReportWorkbookHint(active) {
@@ -705,7 +714,7 @@
     for (const item of items) {
       const opt = document.createElement("option");
       const label = workbookDisplayName(item);
-      opt.value = item.year_month || label;
+      opt.value = workbookSelectValue(item);
       opt.textContent = item.active ? `${label} — активный` : label;
       select.appendChild(opt);
     }
@@ -726,9 +735,14 @@
     updateReportWorkbookHint(active);
 
     const items = data.items || [];
+    workbookItemsByName = {};
+    for (const item of items) {
+      const key = workbookSelectValue(item);
+      if (key) workbookItemsByName[key] = item;
+    }
     let selectedActive = "";
     for (const item of items) {
-      if (item.active) selectedActive = item.year_month || workbookDisplayName(item);
+      if (item.active) selectedActive = workbookSelectValue(item);
     }
     const preferred = monthSelect?.value || monthSelectSettings?.value || selectedActive;
     suppressMonthChange = true;
@@ -737,17 +751,26 @@
     suppressMonthChange = false;
   }
 
-  function selectedYearMonth() {
+  function selectedWorkbookKey() {
     return (monthSelect?.value || monthSelectSettings?.value || "").trim();
   }
 
-  function setBothMonthSelects(ym) {
+  function selectedYearMonth() {
+    const key = selectedWorkbookKey();
+    const item = workbookItemsByName[key];
+    if (item?.year_month) return String(item.year_month);
+    if (/^\d{4}-\d{2}$/.test(key)) return key;
+    const m = key.match(/(\d{4}-\d{2})(?:\.xlsx)?$/i);
+    return m ? m[1] : key;
+  }
+
+  function setBothMonthSelects(key) {
     suppressMonthChange = true;
-    if (monthSelect && [...(monthSelect.options || [])].some((o) => o.value === ym)) {
-      monthSelect.value = ym;
+    if (monthSelect && [...(monthSelect.options || [])].some((o) => o.value === key)) {
+      monthSelect.value = key;
     }
-    if (monthSelectSettings && [...(monthSelectSettings.options || [])].some((o) => o.value === ym)) {
-      monthSelectSettings.value = ym;
+    if (monthSelectSettings && [...(monthSelectSettings.options || [])].some((o) => o.value === key)) {
+      monthSelectSettings.value = key;
     }
     suppressMonthChange = false;
   }
@@ -782,18 +805,28 @@
     }
   }
 
+  function findWorkbookKeyForMonth(ym) {
+    if (!/^\d{4}-\d{2}$/.test(ym || "")) return "";
+    // Prefer default unnamed book, then any titled for that month
+    let titled = "";
+    for (const [key, item] of Object.entries(workbookItemsByName)) {
+      if (item.year_month !== ym) continue;
+      if (!item.title) return key;
+      if (!titled) titled = key;
+    }
+    return titled;
+  }
+
   function syncMonthSelectToReportDate() {
     if (!reportDate) return;
     const d = (reportDate.value || "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
     const ym = d.slice(0, 7);
-    const hasOpt =
-      (monthSelect && [...monthSelect.options].some((o) => o.value === ym)) ||
-      (monthSelectSettings && [...monthSelectSettings.options].some((o) => o.value === ym));
-    if (!hasOpt) return;
-    if (selectedYearMonth() === ym) return;
-    setBothMonthSelects(ym);
-    activateMonth({ quiet: true, yearMonth: ym });
+    const key = findWorkbookKeyForMonth(ym);
+    if (!key) return;
+    if (selectedWorkbookKey() === key) return;
+    setBothMonthSelects(key);
+    activateMonth({ quiet: true, yearMonth: key });
   }
 
   async function createMonth() {
@@ -804,14 +837,18 @@
       return;
     }
     const [y, m] = value.split("-").map(Number);
+    const title = (newWorkbookTitle?.value || "").trim();
     setBusy(true);
-    if (workbookCreateStatus) workbookCreateStatus.textContent = `Создание таблицы ${value}…`;
-    log(`Создание новой таблицы (месяц ${value})...`);
+    const labelHint = title ? `${value} — ${title}` : value;
+    if (workbookCreateStatus) workbookCreateStatus.textContent = `Создание таблицы ${labelHint}…`;
+    log(`Создание новой таблицы (${labelHint})...`);
     try {
+      const payload = { year: y, month: m, activate: true };
+      if (title) payload.title = title;
       const res = await fetch("/api/workbook/new", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ year: y, month: m, activate: true }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -820,9 +857,10 @@
         if (workbookCreateStatus) workbookCreateStatus.textContent = err;
         return;
       }
-      const msg = data.message || `Таблица ${value} создана и активна`;
+      const msg = data.message || `Таблица ${labelHint} создана и активна`;
       log(msg);
       if (workbookCreateStatus) workbookCreateStatus.textContent = msg;
+      if (newWorkbookTitle) newWorkbookTitle.value = "";
       await refreshWorkbooks();
     } catch (e) {
       log(e.message);
@@ -833,20 +871,31 @@
   }
 
   async function activateMonth({ syncDate = false, quiet = false, yearMonth = null } = {}) {
-    const ym = (yearMonth || selectedYearMonth()).trim();
-    if (!ym) {
+    const key = (yearMonth || selectedWorkbookKey()).trim();
+    if (!key) {
       if (!quiet) log("Нет месяца для активации");
       if (workbookEditStatus) workbookEditStatus.textContent = "Выберите таблицу в списке";
       return false;
     }
-    setBothMonthSelects(ym);
+    const item = workbookItemsByName[key];
+    const ym =
+      (item && item.year_month) ||
+      (/^\d{4}-\d{2}$/.test(key) ? key : (key.match(/(\d{4}-\d{2})(?:\.xlsx)?$/i) || [])[1] || "");
+    setBothMonthSelects(key);
     setBusy(true);
-    if (workbookEditStatus) workbookEditStatus.textContent = `Активация ${ym}…`;
+    const showLabel = item ? workbookDisplayName(item) : key;
+    if (workbookEditStatus) workbookEditStatus.textContent = `Активация ${showLabel}…`;
     try {
+      const body =
+        item && item.name
+          ? { name: item.name }
+          : key.toLowerCase().endsWith(".xlsx")
+            ? { name: key }
+            : { year_month: ym || key };
       const res = await fetch("/api/workbook/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ year_month: ym }),
+        body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -856,10 +905,10 @@
         if (reportWorkbookHint) reportWorkbookHint.textContent = err;
         return false;
       }
-      const msg = `Активна таблица: ${workbookDisplayName(data.active) || ym}`;
+      const msg = `Активна таблица: ${workbookDisplayName(data.active) || showLabel}`;
       if (!quiet) log(msg);
       if (workbookEditStatus) workbookEditStatus.textContent = msg;
-      if (syncDate) syncReportDateToMonth(ym);
+      if (syncDate && ym) syncReportDateToMonth(ym);
       await refreshWorkbooks();
       return true;
     } catch (e) {
@@ -872,16 +921,17 @@
   }
 
   async function editExistingTable() {
-    const ym = selectedYearMonth();
-    if (!ym) {
+    const key = selectedWorkbookKey();
+    if (!key) {
       if (workbookEditStatus) workbookEditStatus.textContent = "Выберите таблицу в списке";
       return;
     }
-    const ok = await activateMonth({ syncDate: true, yearMonth: ym });
+    const label = workbookDisplayName(workbookItemsByName[key]) || key;
+    const ok = await activateMonth({ syncDate: true, yearMonth: key });
     if (!ok) return;
     if (workbookEditStatus) {
       workbookEditStatus.textContent =
-        `Таблица ${ym} активна. Разберите данные и нажмите «Формировать отчёт» для дозаполнения.`;
+        `Таблица ${label} активна. Разберите данные и нажмите «Формировать отчёт» для дозаполнения.`;
     }
     showView("report");
   }

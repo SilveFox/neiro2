@@ -13,8 +13,11 @@ import openpyxl
 from core import config
 from core.workbook_factory import (
     WorkbookExistsError,
+    activate_workbook_name,
     create_month_workbook,
+    list_month_workbooks,
     sanitize_workbook,
+    sanitize_workbook_title,
     written_log_for,
 )
 
@@ -32,7 +35,7 @@ class MonthWorkbookTests(unittest.TestCase):
             try:
                 path = create_month_workbook(2026, 7, activate=True)
                 self.assertTrue(path.exists())
-                self.assertEqual(path.name, "SE_Lukhovitsy_2026-07.xlsx")
+                self.assertEqual(path.name, "2026-07.xlsx")
                 self.assertTrue(written_log_for(path).exists())
 
                 wb = openpyxl.load_workbook(path, data_only=False)
@@ -162,6 +165,49 @@ class MonthWorkbookTests(unittest.TestCase):
                 self.assertNotRegex(text, r"\[\d+\]")
         finally:
             wb.close()
+
+    def test_create_with_custom_title(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            old_dir = config.WORKBOOKS_DIR
+            old_meta = config.ACTIVE_WORKBOOK_META
+            old_src = config.SOURCE_WORKBOOK
+            config.WORKBOOKS_DIR = tmp_path / "workbooks"
+            config.WORKBOOKS_DIR.mkdir()
+            config.ACTIVE_WORKBOOK_META = tmp_path / "active_workbook.json"
+            # Minimal template so test does not depend on docs/*.xlsx presence
+            src = tmp_path / "template.xlsx"
+            wb = openpyxl.Workbook()
+            wb.active.title = "Данные"
+            wb.create_sheet("Расчет")
+            wb.create_sheet("Шаблон")
+            for day in range(1, 32):
+                wb.create_sheet(f"{day:02d}")
+            wb.save(src)
+            wb.close()
+            config.SOURCE_WORKBOOK = src
+            try:
+                self.assertEqual(sanitize_workbook_title("  Гарантия / север "), "Гарантия_север")
+                path = create_month_workbook(2026, 11, activate=True, title="Гарантия")
+                self.assertEqual(path.name, "Гарантия_2026-11.xlsx")
+                items = list_month_workbooks()
+                self.assertEqual(len(items), 1)
+                self.assertEqual(items[0]["title"], "Гарантия")
+                self.assertEqual(items[0]["label"], "2026-11 — Гарантия")
+                meta = activate_workbook_name(path.name)
+                self.assertEqual(meta["name"], path.name)
+                self.assertEqual(meta["year_month"], "2026-11")
+                with self.assertRaises(WorkbookExistsError):
+                    create_month_workbook(2026, 11, activate=False, title="Гарантия")
+                other = create_month_workbook(2026, 11, activate=False, title="Луховицы")
+                self.assertEqual(other.name, "Луховицы_2026-11.xlsx")
+                self.assertEqual(len(list_month_workbooks()), 2)
+                # Legacy SE_Lukhovitsy prefix stripped from user input
+                self.assertEqual(sanitize_workbook_title("SE_Lukhovitsy_Север"), "Север")
+            finally:
+                config.WORKBOOKS_DIR = old_dir
+                config.ACTIVE_WORKBOOK_META = old_meta
+                config.SOURCE_WORKBOOK = old_src
 
 
 if __name__ == "__main__":
