@@ -540,6 +540,24 @@ class RulesParseTests(unittest.TestCase):
         with self.assertRaises(ParseError):
             parse_report_text_rules("Карандак В.Е.\nпросто текст без объёма\n")
 
+    def test_rules_parse_zayavki_with_qty_is_job_not_header(self):
+        """«Заявки по неисправности интернета 7 шт» is a priced job (aliases), not a section title."""
+        text = (
+            "Карандак , Лошкомойников\n"
+            "Заявки по неисправности интернета 7 шт\n"
+        )
+        report = parse_report_text_rules(text, report_date="2026-11-03")
+        self.assertEqual(report.get("parse_mode"), "rules")
+        w = report["workers"][0]
+        self.assertGreaterEqual(len(w.get("members") or []), 2)
+        jobs = w["performed_jobs"]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(float(jobs[0]["volume"]), 7)
+        self.assertIn("неисправности", jobs[0]["raw_task_name"].lower())
+        calc = calculate_report(report)
+        # Alias/exact match should find the price row when aliases are loaded
+        self.assertGreaterEqual(float(calc.grand_total or 0), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -95,11 +95,34 @@ def _norm_unit(unit: str | None) -> str | None:
     return u
 
 
+def _has_explicit_job_volume(text: str) -> bool:
+    """True if line has a clear work volume (… 7 шт / 15 м … / — 2 шт)."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _VOLUME_LEADING_UNIT_RE.match(t):
+        return True
+    if _VOLUME_TRAILING_RE.search(t) or _VOLUME_IN_NAME_RE.search(t):
+        return True
+    return False
+
+
 def _is_skip_qty_line(text: str) -> str | None:
     t = (text or "").strip()
     if not t:
         return "empty"
     if _SKIP_QTY_LINE_RE.search(t):
+        # «Заявки по неисправности интернета 7 шт» — работа из прайса/алиасов,
+        # не заголовок раздела. Пропускаем только чистые заголовки без объёма.
+        if _has_explicit_job_volume(t) and re.match(
+            r"^(?:\d+\s+)?заявк", t, flags=re.IGNORECASE
+        ):
+            # bare «2 заявки» / «заявки» without unit qty still a header
+            if not re.search(
+                rf"{_NUM}\s*{_UNIT_TOKEN}\s*\.?$", t, flags=re.IGNORECASE
+            ) and not _VOLUME_IN_NAME_RE.search(t):
+                return "header_or_address"
+            return None
         return "header_or_address"
     # Pure people header: only known surnames / commas / «и»
     surnames = {s for s, _ in _employee_surnames()}
@@ -891,10 +914,17 @@ def _parse_json_response(raw: str) -> dict[str, Any]:
 def _section_service_type(line: str, current: str) -> tuple[str, bool]:
     """
     If line is a section header («заявки по тв/интернету»), return (type, True).
-    Otherwise (current, False).
+    Job lines with volume («…интернета 7 шт») are not section headers.
     """
     low = (line or "").lower().replace("ё", "е")
     if "заявк" not in low:
+        return current, False
+    # Priced job row, not a section title
+    if _has_explicit_job_volume(line):
+        if "тв" in low or "телевид" in low:
+            return "ТВ", False
+        if "интернет" in low or re.search(r"\bинет", low):
+            return "Интернет", False
         return current, False
     if re.search(r"заявк\w*\s+по\s+(тв|телевид)", low):
         return "ТВ", True
