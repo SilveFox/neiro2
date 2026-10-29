@@ -183,9 +183,14 @@ def health():
             price_count = len(json.loads(config.PRICE_CACHE.read_text(encoding="utf-8")))
         except Exception:
             price_count = 0
+    workbook = None
+    try:
+        workbook = str(ensure_working_workbook())
+    except FileNotFoundError:
+        workbook = None
     return {
         "ok": True,
-        "workbook": str(ensure_working_workbook()),
+        "workbook": workbook,
         "active": active,
         "model": get_active_model(),
         "price_items": price_count,
@@ -194,7 +199,8 @@ def health():
 
 @app.get("/api/workbook/list")
 def api_workbook_list():
-    ensure_working_workbook()
+    # Do not auto-create bare YYYY-MM.xlsx on empty dir (would duplicate titled creates).
+    config.WORKBOOKS_DIR.mkdir(parents=True, exist_ok=True)
     return {
         "ok": True,
         "active": get_active_meta(),
@@ -412,8 +418,8 @@ def api_excel(body: ExcelRequest):
 
 @app.get("/api/download-excel")
 def download_excel():
-    path = ensure_working_workbook()
     try:
+        path = ensure_working_workbook()
         path = ensure_workbook_path_allowed(Path(path), require_month_name=False)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -587,6 +593,8 @@ def api_excel_log():
     try:
         ensure_working_workbook()
         return {"ok": True, **get_written_log()}
+    except FileNotFoundError:
+        return {"ok": True, "workbook": None, "entries": [], "message": "Нет активной таблицы"}
     except Exception as exc:
         log.exception("excel-log failed")
         raise HTTPException(status_code=500, detail=_client_error(exc)) from exc

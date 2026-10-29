@@ -184,7 +184,13 @@ def set_active_workbook(path: Path, year_month: str | None = None) -> dict[str, 
 
 
 def get_active_workbook() -> Path:
-    """Return active workbook path; bootstrap fallback if needed."""
+    """
+    Return active workbook path.
+
+    Does NOT auto-create a bare YYYY-MM.xlsx (that raced with titled creates
+    when health/list ran on an empty workbooks dir). Create only via
+    /api/workbook/new or on Excel write (workbook_for_report_date).
+    """
     meta = get_active_meta()
     if meta:
         return Path(meta["path"])
@@ -201,17 +207,9 @@ def get_active_workbook() -> Path:
         set_active_workbook(config.WORKING_WORKBOOK, year_month_from_path(config.WORKING_WORKBOOK))
         return config.WORKING_WORKBOOK.resolve()
 
-    # Bootstrap: copy source as current calendar month (or as legacy workbook.xlsx)
-    if not config.SOURCE_WORKBOOK.exists():
-        raise FileNotFoundError(f"Нет исходного Excel: {config.SOURCE_WORKBOOK}")
-    today = date.today()
-    try:
-        path = create_month_workbook(today.year, today.month, activate=True)
-        return path
-    except WorkbookExistsError:
-        path = month_workbook_path(today.year, today.month)
-        set_active_workbook(path)
-        return path
+    raise FileNotFoundError(
+        "Нет активной таблицы Excel. Создайте месяц в «Настройках»."
+    )
 
 
 def list_month_workbooks() -> list[dict[str, Any]]:
@@ -358,21 +356,24 @@ def create_month_workbook(
 
 
 def find_workbooks_for_month(year_month: str) -> list[Path]:
-    """All month books for YYYY-MM (bare YYYY-MM.xlsx first, then titled / legacy)."""
+    """All month books for YYYY-MM (titled first, bare YYYY-MM.xlsx last)."""
     m = YEAR_MONTH_RE.match(year_month.strip())
     if not m:
         raise ValueError("Ожидается формат YYYY-MM")
     year, month = int(m.group(1)), int(m.group(2))
     ym = f"{year:04d}-{month:02d}"
-    default = month_workbook_path(year, month)
     found: list[Path] = []
-    if default.exists():
-        found.append(default.resolve())
-    # Titled: Name_YYYY-MM.xlsx; legacy: SE_Lukhovitsy[_Name]_YYYY-MM.xlsx
+    # Titled: Name_YYYY-MM.xlsx; legacy SE_Lukhovitsy_Name_YYYY-MM.xlsx
     for path in sorted(config.WORKBOOKS_DIR.glob(f"*_{ym}.xlsx")):
         if not _BOOK_NAME_RE.match(path.name):
             continue
         resolved = path.resolve()
+        if resolved not in found:
+            found.append(resolved)
+    # Bare month last (auto-created / unnamed)
+    default = month_workbook_path(year, month)
+    if default.exists():
+        resolved = default.resolve()
         if resolved not in found:
             found.append(resolved)
     legacy_bare = config.WORKBOOKS_DIR / f"SE_Lukhovitsy_{ym}.xlsx"
@@ -387,7 +388,7 @@ def activate_year_month(year_month: str) -> dict[str, Any]:
     paths = find_workbooks_for_month(year_month)
     if not paths:
         raise FileNotFoundError(f"Нет файла для месяца {year_month}")
-    # Prefer default unnamed book if several share the month
+    # Prefer titled book over bare YYYY-MM.xlsx when several share the month
     return set_active_workbook(paths[0], year_month)
 
 
