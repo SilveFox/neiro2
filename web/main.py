@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -15,7 +16,7 @@ from pydantic import BaseModel, Field
 from core import config
 from core.excel_writer import append_calc_to_workbook, ensure_working_workbook, get_written_log
 from core.model_settings import get_active_model, model_settings_payload, set_active_model
-from core.parser import ParseError, parse_report_text, validate_report
+from core.parser import ParseError, parse_report_text, parse_report_text_rules, validate_report
 from core.report_db import list_reports, save_report
 from core.pricing import (
     PriceList,
@@ -31,6 +32,7 @@ from core.workbook_factory import (
     activate_workbook_name,
     activate_year_month,
     create_month_workbook,
+    export_workbook_period,
     get_active_meta,
     list_month_workbooks,
     set_active_workbook,
@@ -64,6 +66,7 @@ class ParseRequest(BaseModel):
     report_text: str = Field(..., min_length=1)
     extra_prompt: str = ""
     report_date: str | None = None
+    use_ai: bool = True
 
 
 class ExcelRequest(BaseModel):
@@ -253,18 +256,27 @@ def api_workbook_activate(body: ActivateRequest):
 
 @app.post("/api/parse")
 def api_parse(body: ParseRequest, request: Request):
-    _check_parse_rate(request)
+    # Rate limit only expensive Ollama path
+    if body.use_ai:
+        _check_parse_rate(request)
     try:
-        report = parse_report_text(
-            body.report_text,
-            extra_prompt=body.extra_prompt,
-            report_date=body.report_date,
-        )
+        if body.use_ai:
+            report = parse_report_text(
+                body.report_text,
+                extra_prompt=body.extra_prompt,
+                report_date=body.report_date,
+            )
+        else:
+            report = parse_report_text_rules(
+                body.report_text,
+                report_date=body.report_date,
+            )
         calc = calculate_report(report)
         return {
             "ok": True,
             "report": report,
             "calculation": calc.to_dict(),
+            "parse_mode": report.get("parse_mode") or ("ai" if body.use_ai else "rules"),
         }
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -408,6 +420,55 @@ def download_excel():
     return FileResponse(
         path,
         filename=path.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def _parse_iso_date(value: str, field: str) -> date:
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError as exc:
+        raise HTTPException(422, f"Некорректная дата «{field}»: ожидается ГГГГ-ММ-ДД") from exc
+
+
+@app.get("/api/download-excel-period")
+def download_excel_period(
+    background_tasks: BackgroundTasks,
+    date_from: str = Query(..., alias="from", description="YYYY-MM-DD"),
+    date_to: str = Query(..., alias="to", description="YYYY-MM-DD"),
+):
+    """
+    Download active workbook sliced to day sheets in [from, to].
+    Sheets «Данные», «Расчет», «Шаблон» are omitted.
+    """
+    path = ensure_working_workbook()
+    try:
+        path = ensure_workbook_path_allowed(Path(path), require_month_name=False)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    d_from = _parse_iso_date(date_from, "from")
+    d_to = _parse_iso_date(date_to, "to")
+    try:
+        export_path = export_workbook_period(path, d_from, d_to)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        log.exception("period export failed")
+        raise HTTPException(500, _client_error(exc)) from exc
+
+    def _cleanup(p: Path) -> None:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    background_tasks.add_task(_cleanup, export_path)
+    return FileResponse(
+        export_path,
+        filename=export_path.name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 

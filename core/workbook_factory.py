@@ -6,6 +6,7 @@ import calendar
 import json
 import re
 import shutil
+import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -409,16 +410,31 @@ def activate_workbook_name(name: str) -> dict[str, Any]:
 
 def ensure_month_workbook(year: int, month: int, activate: bool = True) -> tuple[Path, bool]:
     """
-    Return the monthly workbook path, creating an empty month if the file is missing.
+    Return the monthly workbook path, creating an empty month if none exists.
 
-    Returns (path, created). When activate=True the book becomes the active one.
+    Preference:
+      1) active book for this YYYY-MM (incl. titled, e.g. Гарантия_2026-10.xlsx)
+      2) any existing book for the month (bare YYYY-MM.xlsx first, then titled)
+      3) create bare YYYY-MM.xlsx
+
+    Returns (path, created). When activate=True the chosen book becomes active.
     """
-    dest = month_workbook_path(year, month)
     year_month = f"{year:04d}-{month:02d}"
-    if dest.exists():
+
+    meta = get_active_meta()
+    if meta and meta.get("year_month") == year_month:
+        active_path = Path(meta["path"])
+        if active_path.is_file():
+            return active_path.resolve(), False
+
+    existing = find_workbooks_for_month(year_month)
+    if existing:
+        path = existing[0]
         if activate:
-            set_active_workbook(dest, year_month)
-        return dest.resolve(), False
+            set_active_workbook(path, year_month)
+        return path.resolve(), False
+
+    dest = month_workbook_path(year, month)
     try:
         path = create_month_workbook(year, month, activate=activate)
         return path, True
@@ -429,9 +445,103 @@ def ensure_month_workbook(year: int, month: int, activate: bool = True) -> tuple
 
 
 def workbook_for_report_date(report_date: str, activate: bool = True) -> tuple[Path, bool]:
-    """Pick / create YYYY-MM.xlsx from report_date (YYYY-MM-DD)."""
+    """Pick existing month book (titled or bare) or create YYYY-MM.xlsx from report_date."""
     try:
         dt = date.fromisoformat(report_date[:10])
     except ValueError as exc:
         raise ValueError(f"Некорректная report_date: {report_date}") from exc
     return ensure_month_workbook(dt.year, dt.month, activate=activate)
+
+
+_DAY_SHEET_RE = re.compile(r"^(\d{2})$")
+
+
+def export_workbook_period(
+    workbook_path: Path,
+    date_from: date,
+    date_to: date,
+    dest: Path | None = None,
+) -> Path:
+    """
+    Build a downloadable Excel with only day sheets in [date_from, date_to].
+
+    Drops «Данные», «Расчет», «Шаблон» and day sheets outside the range.
+    Period must fall within the workbook's YYYY-MM.
+    Returns path to the written file (temp if dest is None).
+    """
+    if date_from > date_to:
+        raise ValueError("Дата «с» не может быть позже даты «по»")
+
+    path = Path(workbook_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Книга не найдена: {path.name}")
+
+    ym = year_month_from_path(path)
+    if not ym or not YEAR_MONTH_RE.match(ym):
+        raise ValueError("Не удалось определить месяц книги (ожидается …YYYY-MM.xlsx)")
+    book_year, book_month = int(ym[:4]), int(ym[5:7])
+    days_in_month = calendar.monthrange(book_year, book_month)[1]
+    month_start = date(book_year, book_month, 1)
+    month_end = date(book_year, book_month, days_in_month)
+
+    if date_from < month_start or date_to > month_end:
+        raise ValueError(
+            f"Период должен быть внутри месяца книги {ym} "
+            f"({month_start.isoformat()}…{month_end.isoformat()})"
+        )
+
+    # Inclusive day list: 27..29 → {27, 28, 29}
+    keep_days = [f"{d:02d}" for d in range(date_from.day, date_to.day + 1)]
+    keep_set = set(keep_days)
+
+    wb = openpyxl.load_workbook(path)
+    try:
+        sanitize_workbook(wb)
+
+        # Ensure every day in the range exists (create from «Шаблон» if missing)
+        template = wb[config.SHEET_TEMPLATE] if config.SHEET_TEMPLATE in wb.sheetnames else None
+        for day_name in keep_days:
+            if day_name in wb.sheetnames:
+                continue
+            day_num = int(day_name)
+            if template is not None:
+                new_ws = wb.copy_worksheet(template)
+                new_ws.title = day_name
+                _strip_work_tables(new_ws)
+                new_ws.cell(1, 2).value = f"{day_num:02d}.{book_month:02d}.{book_year}"
+            else:
+                new_ws = wb.create_sheet(day_name)
+                new_ws.cell(1, 2).value = f"{day_num:02d}.{book_month:02d}.{book_year}"
+
+        # Drop service sheets and days outside the period
+        for name in list(wb.sheetnames):
+            if name in keep_set:
+                continue
+            del wb[name]
+
+        remaining = [n for n in keep_days if n in wb.sheetnames]
+        if not remaining:
+            raise ValueError("В книге нет дневных листов за выбранный период")
+        if set(remaining) != keep_set:
+            missing = ", ".join(d for d in keep_days if d not in remaining)
+            raise ValueError(f"Не удалось сформировать листы: {missing}")
+
+        # Chronological tab order: 27, 28, 29, …
+        for i, name in enumerate(remaining):
+            current = wb.sheetnames.index(name)
+            if current != i:
+                wb.move_sheet(wb[name], offset=i - current)
+
+        if dest is None:
+            stem = path.stem
+            out_name = f"{stem}_{date_from.day:02d}-{date_to.day:02d}.xlsx"
+            dest = Path(tempfile.gettempdir()) / out_name
+        else:
+            dest = Path(dest)
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(dest)
+    finally:
+        wb.close()
+
+    return dest.resolve()

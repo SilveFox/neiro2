@@ -2,8 +2,9 @@
 """
 Append report data into SE_Lukhovitsy day sheets (01..31).
 
-Writes into the monthly workbook that matches report_date (YYYY-MM).
-If that file does not exist, an empty month is created and activated.
+Writes into the monthly workbook that matches report_date (YYYY-MM):
+active titled book for that month if set, else any existing book for the month,
+else creates bare YYYY-MM.xlsx and activates it.
 
 Brigade = one block:
   C = ФИО участников (по одному в строке, сверху блока)

@@ -478,20 +478,44 @@ textarea {
 }
 
 .data-table.editable input,
-.data-table.editable textarea {
+.data-table.editable textarea,
+.data-table.editable select {
   border: 1px solid transparent;
   background: transparent;
   padding: 6px 8px;
   border-radius: 8px;
   width: 100%;
   font: inherit;
+  box-sizing: border-box;
 }
 
 .data-table.editable input:focus,
-.data-table.editable textarea:focus {
+.data-table.editable textarea:focus,
+.data-table.editable select:focus {
   border-color: #b7c9f0;
   background: #fff;
   outline: none;
+}
+
+.preview-matched {
+  font-size: 0.75rem;
+  margin-top: 4px;
+  line-height: 1.3;
+}
+
+.preview-actions {
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.preview-actions .btn {
+  padding: 4px 8px;
+  min-width: 0;
+  margin: 0 2px;
+}
+
+#previewEditHint {
+  margin: 8px 0 0;
 }
 
 .data-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }

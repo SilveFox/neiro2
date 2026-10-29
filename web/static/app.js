@@ -9,11 +9,14 @@
   const status = $("status");
   const statusText = $("statusText");
   const btnParse = $("btnParse");
+  const btnParseRules = $("btnParseRules");
   const btnCalc = $("btnCalc");
   const btnSaveDb = $("btnSaveDb");
   const dbSaveStatus = $("dbSaveStatus");
   const btnExcel = $("btnExcel");
+  const btnApplyPreview = $("btnApplyPreview");
   const btnCancelPreview = $("btnCancelPreview");
+  const previewEditHint = $("previewEditHint");
   const btnSelectFile = $("btnSelectFile");
   const btnPaste = $("btnPaste");
   const fileInput = $("fileInput");
@@ -54,9 +57,11 @@
   let startedAt = 0;
   let currentReport = null;
   let currentCalc = null;
+  let previewDirty = false;
   let priceItems = [];
   let priceDirty = false;
   let aliasesDoc = { aliases: [] };
+  const SERVICE_TYPES = ["Общее", "Интернет", "ТВ", "Комбо"];
 
   const today = new Date();
   reportDate.value = today.toISOString().slice(0, 10);
@@ -112,7 +117,7 @@
   }
 
   function setBusy(busy) {
-    [btnParse, btnCalc, btnSaveDb, btnExcel, btnNewMonth, btnActivateMonth, btnEditTable, btnSelectFile, btnPaste, monthSelect, monthSelectSettings].forEach((b) => {
+    [btnParse, btnParseRules, btnCalc, btnSaveDb, btnExcel, btnApplyPreview, btnDownloadPeriod, btnNewMonth, btnActivateMonth, btnEditTable, btnSelectFile, btnPaste, monthSelect, monthSelectSettings].forEach((b) => {
       if (b) b.disabled = busy;
     });
     if (!busy && currentCalc) btnExcel.disabled = false;
@@ -132,6 +137,9 @@
   const mainNav = $("mainNav");
   const workbookCreateStatus = $("workbookCreateStatus");
   const workbookEditStatus = $("workbookEditStatus");
+  const downloadPeriodFrom = $("downloadPeriodFrom");
+  const downloadPeriodTo = $("downloadPeriodTo");
+  const btnDownloadPeriod = $("btnDownloadPeriod");
   const btnRefreshWorkbooks = $("btnRefreshWorkbooks");
   let suppressMonthChange = false;
 
@@ -193,70 +201,196 @@
     });
   });
 
-  /* -------- preview from calculation JSON -------- */
+  /* -------- preview (editable from report + calc amounts) -------- */
+  function setPreviewDirty(on) {
+    previewDirty = !!on;
+    if (btnApplyPreview) btnApplyPreview.disabled = !previewDirty || !currentReport;
+    if (previewEditHint) {
+      previewEditHint.textContent = previewDirty
+        ? "Есть несохранённые правки в таблице — нажмите «Применить правки»."
+        : "Правьте ячейки прямо в таблице, затем «Применить правки» — JSON обновится и отчёт пересчитается.";
+    }
+  }
+
+  function serviceTypeOptions(selected) {
+    const cur = (selected || "Общее").trim() || "Общее";
+    const values = SERVICE_TYPES.includes(cur) ? SERVICE_TYPES : [cur, ...SERVICE_TYPES];
+    return values
+      .map((v) => `<option value="${escapeHtml(v)}"${v === cur ? " selected" : ""}>${escapeHtml(v)}</option>`)
+      .join("");
+  }
+
+  function findPricedForReportJob(calcWorker, reportJob) {
+    const jobs = calcWorker?.jobs || [];
+    if (!jobs.length) return null;
+    const raw = String(reportJob?.raw_task_name || "").trim().toLowerCase();
+    const desc = String(reportJob?.job_description || "").trim().toLowerCase();
+    const vol = Number(reportJob?.volume);
+    const unit = String(reportJob?.unit || "").trim().toLowerCase();
+    const exact = jobs.find((j) => {
+      const jr = String(j.raw_task_name || "").trim().toLowerCase();
+      const jd = String(j.job_description || "").trim().toLowerCase();
+      const ju = String(j.unit || "").trim().toLowerCase();
+      const sameName = (raw && (jr === raw || jd === raw)) || (desc && (jr === desc || jd === desc));
+      if (!sameName) return false;
+      if (unit && ju && ju !== unit) return false;
+      if (Number.isFinite(vol) && j.volume != null && Number(j.volume) !== vol) return false;
+      return true;
+    });
+    if (exact) return exact;
+    return (
+      jobs.find((j) => {
+        const jr = String(j.raw_task_name || "").trim().toLowerCase();
+        const jd = String(j.job_description || "").trim().toLowerCase();
+        return (raw && (jr === raw || jd === raw)) || (desc && (jr === desc || jd === desc));
+      }) || null
+    );
+  }
+
+  function markPreviewInputsDirty(tr) {
+    tr.querySelectorAll("input, select").forEach((el) => {
+      el.addEventListener("input", () => setPreviewDirty(true));
+      el.addEventListener("change", () => setPreviewDirty(true));
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          applyPreviewAndRecalc();
+        }
+      });
+    });
+  }
+
   function showCalc(calculation) {
     currentCalc = calculation || null;
     previewBody.innerHTML = "";
     problemList.innerHTML = "";
 
-    if (!calculation || !(calculation.workers || []).length) {
-      previewBody.innerHTML = `<tr class="empty-row"><td colspan="5">Нет данных расчёта</td></tr>`;
+    let report = currentReport;
+    if (!report && jsonEditor.value.trim()) {
+      try {
+        report = JSON.parse(jsonEditor.value);
+        currentReport = report;
+      } catch (_) {
+        report = null;
+      }
+    }
+
+    const workers = report?.workers || [];
+    if (!workers.length) {
+      previewBody.innerHTML = `<tr class="empty-row"><td colspan="8">Нет данных расчёта</td></tr>`;
       previewMeta.textContent = "Нет данных — загрузите отчёт";
       previewTotal.textContent = "";
       problemList.innerHTML = `<li class="muted">Пока нет проблемных работ</li>`;
       btnExcel.disabled = true;
+      if (btnApplyPreview) btnApplyPreview.disabled = true;
+      setPreviewDirty(false);
       return;
     }
 
-    const rows = [];
     const unmatched = [];
+    let jobCount = 0;
 
-    for (const w of calculation.workers || []) {
-      const fio = (w.members && w.members.length ? w.members.join(", ") : w.raw_worker_name) || "—";
-      // jobs уже содержит и найденные, и проблемные; unmatched — дубликат для отчёта
-      const jobs = w.jobs || [];
+    workers.forEach((w, wi) => {
+      const members = Array.isArray(w.members) ? w.members.filter(Boolean) : [];
+      const fio = (members.length ? members.join(", ") : w.raw_worker_name) || "";
+      const jobs = Array.isArray(w.performed_jobs) ? w.performed_jobs : [];
+      const calcWorker = (calculation?.workers || [])[wi];
+
       if (!jobs.length) {
-        rows.push({ fio, name: "—", qty: "—", tariff: "—", amount: "—", unmatched: false });
-        continue;
+        const tr = document.createElement("tr");
+        tr.dataset.w = String(wi);
+        tr.innerHTML = `
+          <td><input data-f="fio" type="text" value="${escapeHtml(fio)}" placeholder="ФИО" /></td>
+          <td colspan="6" class="muted">Нет работ — добавьте строку</td>
+          <td></td>`;
+        const addBtn = document.createElement("button");
+        addBtn.type = "button";
+        addBtn.className = "btn outline";
+        addBtn.textContent = "+ работа";
+        addBtn.addEventListener("click", () => addPreviewJob(wi));
+        tr.querySelector("td:last-child").appendChild(addBtn);
+        markPreviewInputsDirty(tr);
+        previewBody.appendChild(tr);
+        return;
       }
-      for (const j of jobs) {
-        const name = j.matched_name || j.job_description || j.raw_task_name || "—";
-        const isUnmatched = j.matched === false || !j.matched_name;
-        rows.push({
-          fio,
-          name,
-          qty: j.volume ?? "—",
-          tariff: isUnmatched ? "—" : formatMoney(j.unit_price),
-          amount: isUnmatched ? "—" : formatMoney(j.amount),
-          unmatched: isUnmatched,
-          raw: j,
+
+      jobs.forEach((j, ji) => {
+        jobCount += 1;
+        const priced = findPricedForReportJob(calcWorker, j);
+        const isUnmatched = !priced || priced.matched === false || !priced.matched_name;
+        const displayName = j.job_description || j.raw_task_name || "";
+        const volume = j.volume ?? "";
+        const unit = j.unit || "шт";
+        const serviceType = j.service_type || "Общее";
+        const tariff = isUnmatched ? "—" : formatMoney(priced.unit_price);
+        const amount =
+          isUnmatched || priced.amount == null
+            ? "—"
+            : formatMoney(
+                Number(priced.volume) === Number(volume) ? priced.amount : Number(volume) * Number(priced.unit_price || 0)
+              );
+
+        const tr = document.createElement("tr");
+        tr.dataset.w = String(wi);
+        tr.dataset.j = String(ji);
+        if (isUnmatched) tr.classList.add("unmatched");
+        tr.innerHTML = `
+          <td><input data-f="fio" type="text" value="${escapeHtml(fio)}" placeholder="ФИО" /></td>
+          <td>
+            <input data-f="name" type="text" value="${escapeHtml(displayName)}" placeholder="Наименование работы" />
+            ${priced?.matched_name && priced.matched_name !== displayName ? `<div class="preview-matched muted">→ ${escapeHtml(priced.matched_name)}</div>` : ""}
+          </td>
+          <td class="num"><input data-f="volume" type="number" step="any" min="0" value="${escapeHtml(String(volume))}" /></td>
+          <td><input data-f="unit" type="text" value="${escapeHtml(unit)}" /></td>
+          <td><select data-f="service_type">${serviceTypeOptions(serviceType)}</select></td>
+          <td class="num">${escapeHtml(String(tariff))}</td>
+          <td class="num">${escapeHtml(String(amount))}</td>
+          <td class="preview-actions"></td>`;
+
+        const actions = tr.querySelector(".preview-actions");
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "btn danger";
+        delBtn.title = "Удалить работу";
+        delBtn.textContent = "✕";
+        delBtn.addEventListener("click", () => removePreviewJob(wi, ji));
+        actions.appendChild(delBtn);
+        if (ji === jobs.length - 1) {
+          const addBtn = document.createElement("button");
+          addBtn.type = "button";
+          addBtn.className = "btn outline";
+          addBtn.title = "Добавить работу";
+          addBtn.textContent = "+";
+          addBtn.addEventListener("click", () => addPreviewJob(wi));
+          actions.appendChild(addBtn);
+        }
+
+        markPreviewInputsDirty(tr);
+        // Keep FIO in sync across rows of the same worker
+        const fioInput = tr.querySelector('[data-f="fio"]');
+        fioInput.addEventListener("input", () => {
+          const val = fioInput.value;
+          previewBody.querySelectorAll(`tr[data-w="${wi}"] input[data-f="fio"]`).forEach((inp) => {
+            if (inp !== fioInput) inp.value = val;
+          });
         });
+        previewBody.appendChild(tr);
+
         if (isUnmatched) {
           unmatched.push({
             name: j.raw_task_name || j.job_description || "Без названия",
             description: j.job_description || "",
-            unit: j.unit || "шт.",
+            unit: j.unit || "шт",
           });
         }
-      }
-    }
+      });
+    });
 
-    for (const r of rows) {
-      const tr = document.createElement("tr");
-      if (r.unmatched) tr.classList.add("unmatched");
-      tr.innerHTML = `
-        <td>${escapeHtml(r.fio)}</td>
-        <td>${escapeHtml(r.name)}</td>
-        <td class="num">${escapeHtml(String(r.qty))}</td>
-        <td class="num">${escapeHtml(String(r.tariff))}</td>
-        <td class="num">${escapeHtml(String(r.amount))}</td>`;
-      previewBody.appendChild(tr);
-    }
-
-    const date = calculation.report_date || reportDate.value || "—";
-    previewMeta.textContent = `Дата ${date} · работ: ${rows.length} · не найдено: ${calculation.unmatched_count || unmatched.length}`;
-    previewTotal.textContent = `Итого: ${formatMoney(calculation.grand_total)}`;
+    const date = calculation?.report_date || report.report_date || reportDate.value || "—";
+    previewMeta.textContent = `Дата ${date} · работ: ${jobCount} · не найдено: ${calculation?.unmatched_count ?? unmatched.length}`;
+    previewTotal.textContent = calculation ? `Итого: ${formatMoney(calculation.grand_total)}` : "";
     btnExcel.disabled = false;
+    setPreviewDirty(false);
     setStep(3);
 
     if (!unmatched.length) {
@@ -270,6 +404,109 @@
         problemList.appendChild(buildUnmatchedPicker(u));
       }
     }
+  }
+
+  function collectPreviewEditsIntoReport() {
+    const report = currentReport || (jsonEditor.value.trim() ? JSON.parse(jsonEditor.value) : null);
+    if (!report || !Array.isArray(report.workers)) {
+      throw new Error("Нет отчёта для применения правок");
+    }
+    const byWorker = new Map();
+    previewBody.querySelectorAll("tr[data-w]").forEach((tr) => {
+      const wi = Number(tr.dataset.w);
+      if (!Number.isFinite(wi) || !report.workers[wi]) return;
+      if (!byWorker.has(wi)) byWorker.set(wi, { fio: "", jobs: [] });
+      const bucket = byWorker.get(wi);
+      const fioEl = tr.querySelector('[data-f="fio"]');
+      if (fioEl) bucket.fio = fioEl.value.trim();
+      const nameEl = tr.querySelector('[data-f="name"]');
+      if (!nameEl) return;
+      const name = nameEl.value.trim();
+      const volumeRaw = tr.querySelector('[data-f="volume"]')?.value ?? "";
+      const volume = parseFloat(String(volumeRaw).replace(",", "."));
+      const unit = (tr.querySelector('[data-f="unit"]')?.value || "шт").trim() || "шт";
+      const service_type =
+        (tr.querySelector('[data-f="service_type"]')?.value || "Общее").trim() || "Общее";
+      if (!name) return;
+      bucket.jobs.push({
+        raw_task_name: name,
+        job_description: name,
+        service_type,
+        volume: Number.isFinite(volume) ? volume : 0,
+        unit,
+      });
+    });
+
+    byWorker.forEach((bucket, wi) => {
+      const w = report.workers[wi];
+      const fio = bucket.fio;
+      if (fio) {
+        const members = fio.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+        w.members = members.length ? members : [fio];
+        w.raw_worker_name = members.length > 1 ? members.join(", ") : members[0] || fio;
+      }
+      w.performed_jobs = bucket.jobs;
+    });
+
+    currentReport = report;
+    jsonEditor.value = JSON.stringify(report, null, 2);
+    setPreviewDirty(false);
+    return report;
+  }
+
+  function removePreviewJob(workerIdx, jobIdx) {
+    try {
+      collectPreviewEditsIntoReport();
+    } catch (_) {
+      /* keep going with currentReport */
+    }
+    const report = currentReport;
+    if (!report?.workers?.[workerIdx]) return;
+    const jobs = report.workers[workerIdx].performed_jobs || [];
+    jobs.splice(jobIdx, 1);
+    report.workers[workerIdx].performed_jobs = jobs;
+    currentReport = report;
+    jsonEditor.value = JSON.stringify(report, null, 2);
+    setPreviewDirty(true);
+    showCalc(currentCalc);
+    setPreviewDirty(true);
+  }
+
+  function addPreviewJob(workerIdx) {
+    try {
+      collectPreviewEditsIntoReport();
+    } catch (_) {
+      /* ignore */
+    }
+    const report = currentReport;
+    if (!report?.workers?.[workerIdx]) return;
+    if (!Array.isArray(report.workers[workerIdx].performed_jobs)) {
+      report.workers[workerIdx].performed_jobs = [];
+    }
+    report.workers[workerIdx].performed_jobs.push({
+      raw_task_name: "",
+      job_description: "",
+      service_type: "Общее",
+      volume: 1,
+      unit: "шт",
+    });
+    currentReport = report;
+    jsonEditor.value = JSON.stringify(report, null, 2);
+    showCalc(currentCalc);
+    setPreviewDirty(true);
+    const rows = previewBody.querySelectorAll(`tr[data-w="${workerIdx}"]`);
+    const last = rows[rows.length - 1];
+    last?.querySelector('[data-f="name"]')?.focus();
+  }
+
+  async function applyPreviewAndRecalc() {
+    try {
+      collectPreviewEditsIntoReport();
+    } catch (e) {
+      log(e.message);
+      return;
+    }
+    await recalculate();
   }
 
   function pricePickScore(query, name) {
@@ -383,6 +620,13 @@
   }
 
   function reportWithSelectedDate() {
+    if (previewDirty && previewBody.querySelector("tr[data-w]")) {
+      try {
+        collectPreviewEditsIntoReport();
+      } catch (_) {
+        /* fall back to JSON editor */
+      }
+    }
     const report = readEditedReport();
     const selected = (reportDate.value || "").trim();
     if (!selected) throw new Error("Укажите дату отчёта");
@@ -410,21 +654,22 @@
     } catch (_) { /* ignore */ }
   }
 
-  function applyParseResult(data, elapsed) {
+  function applyParseResult(data, elapsed, modeLabel) {
     currentReport = data.report;
     jsonEditor.value = JSON.stringify(data.report, null, 2);
     if (data.extracted_text) reportText.value = data.extracted_text;
     showCalc(data.calculation);
     setStep(3);
     const workers = (data.report.workers || []).length;
-    log(`Разбор успешен за ${elapsed}. Сотрудников: ${workers}.`);
+    const mode = modeLabel || (data.parse_mode === "rules" ? "без ИИ" : "ИИ");
+    log(`Разбор (${mode}) успешен за ${elapsed}. Сотрудников: ${workers}.`);
     if (data.calculation?.unmatched_count) {
       log(`Не сопоставлено с прайсом: ${data.calculation.unmatched_count}`);
     }
   }
 
   /* -------- parse / calc / excel -------- */
-  async function parseReport() {
+  async function parseReport({ useAi = true } = {}) {
     const text = reportText.value.trim();
     if (!text) {
       log("Ошибка: пустой текст отчёта");
@@ -433,15 +678,16 @@
     setBusy(true);
     startTimer();
     setStep(2);
-    log("Отправка отчёта в модель...");
+    log(useAi ? "Отправка отчёта в модель..." : "Разбор без ИИ (правила)...");
     try {
       const res = await fetch("/api/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           report_text: text,
-          extra_prompt: extraPrompt.value.trim(),
+          extra_prompt: useAi ? extraPrompt.value.trim() : "",
           report_date: reportDate.value || null,
+          use_ai: useAi,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -451,7 +697,7 @@
         setStep(1);
         return;
       }
-      applyParseResult(data, elapsed);
+      applyParseResult(data, elapsed, useAi ? "ИИ" : "без ИИ");
     } catch (e) {
       stopTimer();
       setStep(1);
@@ -620,6 +866,7 @@
   function cancelPreview() {
     currentCalc = null;
     currentReport = null;
+    previewDirty = false;
     jsonEditor.value = "";
     showCalc(null);
     setStep(1);
@@ -749,6 +996,11 @@
     fillMonthSelect(monthSelect, items, preferred, selectedActive);
     fillMonthSelect(monthSelectSettings, items, preferred, selectedActive);
     suppressMonthChange = false;
+    const ym =
+      (active && active.year_month) ||
+      (workbookItemsByName[preferred] && workbookItemsByName[preferred].year_month) ||
+      "";
+    if (ym) syncDownloadPeriodDefaults(ym);
   }
 
   function selectedWorkbookKey() {
@@ -934,6 +1186,69 @@
         `Таблица ${label} активна. Разберите данные и нажмите «Формировать отчёт» для дозаполнения.`;
     }
     showView("report");
+  }
+
+  function syncDownloadPeriodDefaults(ym) {
+    if (!downloadPeriodFrom || !downloadPeriodTo) return;
+    const month = String(ym || "").trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) return;
+    const year = Number(month.slice(0, 4));
+    const mon = Number(month.slice(5, 7));
+    const lastDay = new Date(year, mon, 0).getDate();
+    const from = `${month}-01`;
+    const to = `${month}-${String(lastDay).padStart(2, "0")}`;
+    if (!downloadPeriodFrom.value || downloadPeriodFrom.value.slice(0, 7) !== month) {
+      downloadPeriodFrom.value = from;
+    }
+    if (!downloadPeriodTo.value || downloadPeriodTo.value.slice(0, 7) !== month) {
+      downloadPeriodTo.value = to;
+    }
+    downloadPeriodFrom.min = from;
+    downloadPeriodFrom.max = to;
+    downloadPeriodTo.min = from;
+    downloadPeriodTo.max = to;
+  }
+
+  async function downloadPeriodExcel() {
+    const from = (downloadPeriodFrom?.value || "").trim();
+    const to = (downloadPeriodTo?.value || "").trim();
+    if (!from || !to) {
+      if (workbookEditStatus) workbookEditStatus.textContent = "Укажите даты «с» и «по»";
+      return;
+    }
+    if (from > to) {
+      if (workbookEditStatus) workbookEditStatus.textContent = "Дата «с» не может быть позже «по»";
+      return;
+    }
+    setBusy(true);
+    try {
+      const url = `/api/download-excel-period?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || res.statusText);
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get("content-disposition") || "";
+      const match = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
+      let filename = match ? decodeURIComponent(match[1].replace(/"/g, "")) : `period_${from}_${to}.xlsx`;
+      if (!filename.toLowerCase().endsWith(".xlsx")) filename += ".xlsx";
+      const a = document.createElement("a");
+      const href = URL.createObjectURL(blob);
+      a.href = href;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(href);
+      log(`Скачан файл за период ${from}…${to}`);
+      if (workbookEditStatus) workbookEditStatus.textContent = "";
+    } catch (e) {
+      log(`Ошибка скачивания за период: ${e.message}`);
+      if (workbookEditStatus) workbookEditStatus.textContent = e.message;
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function loadHealth() {
@@ -1336,9 +1651,13 @@
   if (btnModelSave) btnModelSave.addEventListener("click", saveModel);
   if (btnModelRefresh) btnModelRefresh.addEventListener("click", loadModelSettings);
 
-  btnParse.addEventListener("click", parseReport);
+  btnParse.addEventListener("click", () => parseReport({ useAi: true }));
+  if (btnParseRules) {
+    btnParseRules.addEventListener("click", () => parseReport({ useAi: false }));
+  }
   btnCalc.addEventListener("click", recalculate);
   if (btnSaveDb) btnSaveDb.addEventListener("click", saveToDb);
+  if (btnApplyPreview) btnApplyPreview.addEventListener("click", applyPreviewAndRecalc);
   btnExcel.addEventListener("click", writeExcel);
   btnCancelPreview.addEventListener("click", cancelPreview);
   btnNewMonth.addEventListener("click", createMonth);
@@ -1347,6 +1666,7 @@
     btnActivateMonth.addEventListener("click", () => activateMonth({ syncDate: true }));
   }
   if (btnEditTable) btnEditTable.addEventListener("click", editExistingTable);
+  if (btnDownloadPeriod) btnDownloadPeriod.addEventListener("click", downloadPeriodExcel);
   function onMonthSelectChange(select) {
     if (suppressMonthChange) return;
     const ym = select.value;

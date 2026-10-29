@@ -15,6 +15,7 @@ from core.parser import (
     clean_json_text,
     detect_brigade_from_text,
     normalize_brigade_workers,
+    parse_report_text_rules,
     preprocess_report_text,
     resolve_employee_name,
     strip_volume_from_task_fields,
@@ -499,6 +500,45 @@ class AliasLinkTests(unittest.TestCase):
     def test_rejects_same_name(self):
         with self.assertRaises(ValueError):
             link_synonym_to_official("Обжим коннектора RJ-45, BNC", "Обжим коннектора RJ-45, BNC", self.path)
+
+
+class RulesParseTests(unittest.TestCase):
+    def test_rules_parse_single_worker(self):
+        text = (
+            "Карандак В.Е.\n"
+            "Обжим коннектора RJ-45, BNC 2 шт\n"
+            "Выкладка запаса кабеля 1 шт\n"
+        )
+        report = parse_report_text_rules(text, report_date="2026-11-01")
+        self.assertEqual(report.get("parse_mode"), "rules")
+        self.assertEqual(report["report_date"], "2026-11-01")
+        self.assertEqual(len(report["workers"]), 1)
+        self.assertIn("Карандак", report["workers"][0]["raw_worker_name"])
+        jobs = report["workers"][0]["performed_jobs"]
+        self.assertGreaterEqual(len(jobs), 2)
+        vols = sorted(float(j["volume"]) for j in jobs)
+        self.assertEqual(vols[:2], [1.0, 2.0])
+
+    def test_rules_parse_brigade_and_prefix_qty(self):
+        text = (
+            "Карандак Лошкомойников\n"
+            "Интернет:\n"
+            "19 сварок 1-7\n"
+            "3 выкладки запаса\n"
+        )
+        report = parse_report_text_rules(text, report_date="2026-11-02")
+        self.assertEqual(report.get("parse_mode"), "rules")
+        w = report["workers"][0]
+        self.assertGreaterEqual(len(w.get("members") or []), 2)
+        jobs = w["performed_jobs"]
+        by_vol = {float(j["volume"]): j for j in jobs}
+        self.assertIn(19.0, by_vol)
+        self.assertIn("1-7", by_vol[19.0]["raw_task_name"])
+        self.assertIn(3.0, by_vol)
+
+    def test_rules_parse_requires_volume(self):
+        with self.assertRaises(ParseError):
+            parse_report_text_rules("Карандак В.Е.\nпросто текст без объёма\n")
 
 
 if __name__ == "__main__":

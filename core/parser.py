@@ -888,6 +888,180 @@ def _parse_json_response(raw: str) -> dict[str, Any]:
     return parsed
 
 
+def _section_service_type(line: str, current: str) -> tuple[str, bool]:
+    """
+    If line is a section header («заявки по тв/интернету»), return (type, True).
+    Otherwise (current, False).
+    """
+    low = (line or "").lower().replace("ё", "е")
+    if "заявк" not in low:
+        return current, False
+    if re.search(r"заявк\w*\s+по\s+(тв|телевид)", low):
+        return "ТВ", True
+    if re.search(r"заявк\w*\s+по\s+(интернет|инт)\b", low):
+        return "Интернет", True
+    # «2 заявки» alone — header without service change
+    if re.match(r"^\d+\s+заявк", low) or re.match(r"^заявк", low):
+        return current, True
+    return current, False
+
+
+def _leading_people_from_text(text: str) -> list[str]:
+    """ФИО/бригада в начале отчёта: штатный список или сырая первая строка."""
+    brigade = detect_brigade_from_text(text)
+    if brigade:
+        return resolve_members(brigade)
+
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        skip = _is_skip_qty_line(line)
+        if skip == "header_or_address":
+            continue
+        parsed = analyze_line_quantity(line)
+        if parsed.position != "none" and parsed.volume is not None:
+            break
+        if skip == "brigade_header" or parsed.position == "none":
+            # Strip trailing section markers on same line
+            head = re.split(
+                r"\bзаявк|\bнастрой|\bмонтаж|\bпроклад|\bотключ|\bсварк",
+                line,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0].strip(" :,—-")
+            if not head:
+                continue
+            parts = re.split(r"\s*,\s*|\s+и\s+", head)
+            names = [p.strip() for p in parts if p.strip()]
+            names = [n for n in names if not re.fullmatch(r"\d+", n)]
+            if names:
+                resolved = resolve_members(names)
+                return resolved or names
+        break
+    return []
+
+
+def _jobs_from_rules_text(prepared: str) -> list[dict[str, Any]]:
+    """Extract performed_jobs from preprocessed lines (volume required)."""
+    jobs: list[dict[str, Any]] = []
+    service = "Общее"
+    for line in (prepared or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        service, is_section = _section_service_type(line, service)
+        if is_section:
+            # Section-only line may still contain a job after «:»
+            if ":" in line:
+                after = line.split(":", 1)[1].strip()
+                if after:
+                    line = after
+                else:
+                    continue
+            else:
+                parsed_hdr = analyze_line_quantity(line)
+                if parsed_hdr.position == "none" or parsed_hdr.volume is None:
+                    continue
+
+        skip = _is_skip_qty_line(line)
+        if skip in ("header_or_address", "brigade_header", "empty"):
+            continue
+
+        parsed = analyze_line_quantity(line)
+        if parsed.position == "none" or parsed.volume is None:
+            continue
+        name = (parsed.task_name or "").strip()
+        if not name or len(name) < 2:
+            continue
+        # Skip leftover people-only fragments
+        if _is_skip_qty_line(name) == "brigade_header":
+            continue
+        unit = parsed.unit or "шт"
+        jobs.append(
+            {
+                "raw_task_name": name,
+                "job_description": name,
+                "service_type": service,
+                "volume": parsed.volume,
+                "unit": unit,
+            }
+        )
+    return jobs
+
+
+def _finalize_parsed_report(
+    validated: dict[str, Any],
+    original_text: str,
+    report_date: str | None,
+    *,
+    parse_mode: str,
+) -> dict[str, Any]:
+    validated = apply_service_type_from_sections(validated, original_text)
+    validated = expand_brigade_workers(validated, original_text)
+    validated = reconcile_volumes_from_source(validated, original_text)
+
+    if report_date:
+        validated["report_date"] = report_date
+    if not validated.get("report_date"):
+        validated["report_date"] = date.today().isoformat()
+
+    validated["source_text_hash"] = source_text_hash(original_text)
+    validated["parsed_at"] = datetime.now().isoformat(timespec="seconds")
+    validated["parse_mode"] = parse_mode
+    return validated
+
+
+def parse_report_text_rules(
+    report_text: str,
+    report_date: str | None = None,
+) -> dict[str, Any]:
+    """
+    Rule-based parse without Ollama.
+
+    Expects: FIO/brigade on the first lines, jobs with explicit volumes
+    (prefix or suffix). Matches price later via aliases — same as AI path.
+    """
+    if not report_text or not report_text.strip():
+        raise ParseError("Пустой текст отчёта")
+
+    original_text = report_text.strip()
+    prepared = preprocess_report_text(original_text)
+    members = _leading_people_from_text(original_text)
+    if not members:
+        members = _leading_people_from_text(prepared)
+    if not members:
+        raise ParseError(
+            "Без ИИ не удалось найти ФИО в начале отчёта. "
+            "Укажите фамилию или бригаду в первой строке."
+        )
+
+    jobs = _jobs_from_rules_text(prepared)
+    if not jobs:
+        # Fallback: scan original lines too (before canonical rewrite)
+        jobs = _jobs_from_rules_text(original_text)
+    if not jobs:
+        raise ParseError(
+            "Без ИИ не найдены работы с объёмом. "
+            "Пишите явно: «3 выкладки…» или «… 2 шт» / «… 30 м»."
+        )
+
+    draft = {
+        "report_date": report_date,
+        "workers": [
+            {
+                "raw_worker_name": ", ".join(members),
+                "members": members,
+                "performed_jobs": jobs,
+            }
+        ],
+    }
+    validated = validate_report(draft)
+    return _finalize_parsed_report(
+        validated, original_text, report_date, parse_mode="rules"
+    )
+
+
 #(правка Новиков С.С. 29.07.2026)
 def parse_report_text(
     report_text: str,
@@ -917,22 +1091,9 @@ def parse_report_text(
         parsed = _parse_json_response(raw2)
         validated = validate_report(parsed)
 
-    # НОВЫЙ ШАГ: проставляем service_type по разделам в исходном тексте
-    validated = apply_service_type_from_sections(validated, original_text)
-
-    validated = expand_brigade_workers(validated, original_text)
-
-    # Коррекция объёмов по позиции числа в исходных строках (до/после названия)
-    validated = reconcile_volumes_from_source(validated, original_text)
-
-    if report_date:
-        validated["report_date"] = report_date
-    if not validated.get("report_date"):
-        validated["report_date"] = date.today().isoformat()
-
-    validated["source_text_hash"] = source_text_hash(original_text)
-    validated["parsed_at"] = datetime.now().isoformat(timespec="seconds")
-    return validated
+    return _finalize_parsed_report(
+        validated, original_text, report_date, parse_mode="ai"
+    )
 
 
 

@@ -209,6 +209,121 @@ class MonthWorkbookTests(unittest.TestCase):
                 config.ACTIVE_WORKBOOK_META = old_meta
                 config.SOURCE_WORKBOOK = old_src
 
+    def test_export_workbook_period_drops_service_sheets(self):
+        from core.workbook_factory import export_workbook_period
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            old_dir = config.WORKBOOKS_DIR
+            old_meta = config.ACTIVE_WORKBOOK_META
+            old_src = config.SOURCE_WORKBOOK
+            config.WORKBOOKS_DIR = tmp_path / "workbooks"
+            config.WORKBOOKS_DIR.mkdir()
+            config.ACTIVE_WORKBOOK_META = tmp_path / "active_workbook.json"
+            src = tmp_path / "template.xlsx"
+            wb = openpyxl.Workbook()
+            wb.active.title = "Данные"
+            wb.create_sheet("Расчет")
+            wb.create_sheet("Шаблон")
+            for day in range(1, 32):
+                wb.create_sheet(f"{day:02d}")
+            wb.save(src)
+            wb.close()
+            config.SOURCE_WORKBOOK = src
+            try:
+                path = create_month_workbook(2026, 10, activate=True, title="Гарантия")
+                out = export_workbook_period(
+                    path,
+                    date(2026, 10, 5),
+                    date(2026, 10, 7),
+                    dest=tmp_path / "out.xlsx",
+                )
+                exported = openpyxl.load_workbook(out)
+                try:
+                    names = exported.sheetnames
+                    self.assertEqual(names, ["05", "06", "07"])
+                    self.assertNotIn("Данные", names)
+                    self.assertNotIn("Расчет", names)
+                    self.assertNotIn("Шаблон", names)
+                finally:
+                    exported.close()
+
+                # Inclusive range 27..29 must yield exactly three day sheets
+                out29 = export_workbook_period(
+                    path,
+                    date(2026, 10, 27),
+                    date(2026, 10, 29),
+                    dest=tmp_path / "out29.xlsx",
+                )
+                exported29 = openpyxl.load_workbook(out29)
+                try:
+                    self.assertEqual(exported29.sheetnames, ["27", "28", "29"])
+                finally:
+                    exported29.close()
+
+                with self.assertRaises(ValueError):
+                    export_workbook_period(path, date(2026, 9, 1), date(2026, 9, 5))
+                with self.assertRaises(ValueError):
+                    export_workbook_period(path, date(2026, 10, 10), date(2026, 10, 5))
+            finally:
+                config.WORKBOOKS_DIR = old_dir
+                config.ACTIVE_WORKBOOK_META = old_meta
+                config.SOURCE_WORKBOOK = old_src
+
+    def test_write_uses_titled_book_not_bare_month(self):
+        """Report for YYYY-MM must go into Title_YYYY-MM.xlsx, not create bare YYYY-MM.xlsx."""
+        self.assertTrue(config.SOURCE_WORKBOOK.exists())
+        from core.excel_writer import append_calc_to_workbook
+        from core.pricing import calculate_report
+        from core.workbook_factory import ensure_month_workbook, get_active_meta, month_workbook_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            old_dir = config.WORKBOOKS_DIR
+            old_meta = config.ACTIVE_WORKBOOK_META
+            config.WORKBOOKS_DIR = tmp_path / "workbooks"
+            config.WORKBOOKS_DIR.mkdir()
+            config.ACTIVE_WORKBOOK_META = tmp_path / "active_workbook.json"
+            try:
+                titled = create_month_workbook(2026, 10, activate=True, title="Гарантия")
+                self.assertEqual(titled.name, "Гарантия_2026-10.xlsx")
+
+                path, created = ensure_month_workbook(2026, 10, activate=True)
+                self.assertFalse(created)
+                self.assertEqual(path.resolve(), titled.resolve())
+                self.assertFalse(month_workbook_path(2026, 10).exists())
+
+                report = {
+                    "report_date": "2026-10-15",
+                    "source_text_hash": "titled-book-hash",
+                    "workers": [
+                        {
+                            "raw_worker_name": "Карандак В.Е.",
+                            "members": ["Карандак В.Е."],
+                            "performed_jobs": [
+                                {
+                                    "raw_task_name": "обжим рж45",
+                                    "job_description": "обжим рж45",
+                                    "service_type": "Интернет",
+                                    "volume": 1,
+                                    "unit": "шт",
+                                }
+                            ],
+                        }
+                    ],
+                }
+                calc = calculate_report(report)
+                result = append_calc_to_workbook(calc, skip_duplicates=True)
+                self.assertTrue(result["ok"])
+                self.assertFalse(result["workbook_created"])
+                self.assertEqual(Path(result["workbook"]).resolve(), titled.resolve())
+                self.assertEqual(result["year_month"], "2026-10")
+                self.assertFalse(month_workbook_path(2026, 10).exists())
+                self.assertEqual(get_active_meta()["name"], "Гарантия_2026-10.xlsx")
+            finally:
+                config.WORKBOOKS_DIR = old_dir
+                config.ACTIVE_WORKBOOK_META = old_meta
+
 
 if __name__ == "__main__":
     unittest.main()
