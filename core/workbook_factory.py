@@ -235,6 +235,220 @@ def list_month_workbooks() -> list[dict[str, Any]]:
     return items
 
 
+_DAY_SHEET_RE = re.compile(r"^\d{2}$")
+_CALC_ROW_REF_RE = re.compile(r"(?<![A-Z0-9$])([A-Z]{1,3})(\d+)(?!\d)")
+
+
+def _clean_person_name(value: object) -> str:
+    return " ".join(str(value or "").replace("\xa0", " ").split())
+
+
+def _is_person_name(value: object) -> bool:
+    name = _clean_person_name(value)
+    if not name or name.casefold() == "фио":
+        return False
+    if name.startswith("="):
+        return False
+    return True
+
+
+def _load_staff_names() -> list[str]:
+    path = config.EMPLOYEES_CACHE
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("employees") or []
+    if not isinstance(raw, list):
+        return []
+    return [_clean_person_name(x) for x in raw if _is_person_name(x)]
+
+
+def _names_in_column(ws, col: int, start: int = 1, end: int = 160) -> list[tuple[int, str]]:
+    found: list[tuple[int, str]] = []
+    for row in range(start, end + 1):
+        value = ws.cell(row, col).value
+        if _is_person_name(value):
+            found.append((row, _clean_person_name(value)))
+    return found
+
+
+def _copy_cell_style(src, dst) -> None:
+    from copy import copy
+
+    if not src.has_style:
+        return
+    dst.font = copy(src.font)
+    dst.border = copy(src.border)
+    dst.fill = copy(src.fill)
+    dst.number_format = src.number_format
+    dst.alignment = copy(src.alignment)
+    dst.protection = copy(src.protection)
+
+
+def _rewrite_formula_row(formula: str, src_row: int, dst_row: int) -> str:
+    """Point relative refs (A3, F3:AI3) at dst_row. Absolute refs and sheet names stay."""
+    if not isinstance(formula, str) or not formula.startswith("=") or src_row == dst_row:
+        return formula
+
+    def repl(match: re.Match[str]) -> str:
+        if int(match.group(2)) != src_row:
+            return match.group(0)
+        return f"{match.group(1)}{dst_row}"
+
+    return _CALC_ROW_REF_RE.sub(repl, formula)
+
+
+def _ensure_names_on_people_sheet(ws, names: list[str]) -> None:
+    """Append missing ФИО to K:L with the same SUMIF as the template."""
+    existing = _names_in_column(ws, config.COL_PEOPLE_SUM_NAME)
+    known = {name.casefold() for _, name in existing}
+    donor = existing[0][0] if existing else None
+    last_row = existing[-1][0] if existing else 2
+    for name in names:
+        key = name.casefold()
+        if key in known:
+            continue
+        last_row += 1
+        name_cell = ws.cell(last_row, config.COL_PEOPLE_SUM_NAME, name)
+        wage_cell = ws.cell(
+            last_row,
+            config.COL_PEOPLE_SUM_WAGE,
+            f"=SUMIF(C:C,K{last_row},I:I)",
+        )
+        if donor is not None:
+            _copy_cell_style(ws.cell(donor, config.COL_PEOPLE_SUM_NAME), name_cell)
+            _copy_cell_style(ws.cell(donor, config.COL_PEOPLE_SUM_WAGE), wage_cell)
+        known.add(key)
+
+
+def _clone_calc_person_row(ws, donor_row: int, dest_row: int, name: str) -> None:
+    for col in range(1, 36):
+        src = ws.cell(donor_row, col)
+        dst = ws.cell(dest_row, col)
+        if col == 1:
+            dst.value = name
+        elif isinstance(src.value, str) and src.value.startswith("="):
+            dst.value = _rewrite_formula_row(src.value, donor_row, dest_row)
+        else:
+            dst.value = None
+        _copy_cell_style(src, dst)
+    height = ws.row_dimensions[donor_row].height
+    if height:
+        ws.row_dimensions[dest_row].height = height
+
+
+def _extend_calc_total_formulas(ws, totals_row: int, last_person_row: int, old_totals_row: int) -> None:
+    for row in range(totals_row, min(totals_row + 6, (ws.max_row or totals_row) + 1)):
+        for col in range(1, 8):
+            value = ws.cell(row, col).value
+            if not isinstance(value, str) or not value.startswith("="):
+                continue
+            updated = re.sub(
+                r"=SUM\(([A-Z]+)(\d+):\1(\d+)\)",
+                lambda match, end=last_person_row: (
+                    f"=SUM({match.group(1)}{match.group(2)}:{match.group(1)}{end})"
+                    if int(match.group(3)) < end
+                    else match.group(0)
+                ),
+                value,
+            )
+            updated = re.sub(
+                rf"=B{old_totals_row}(?!\d)",
+                f"=B{totals_row}",
+                updated,
+            )
+            if updated != value:
+                ws.cell(row, col).value = updated
+
+
+def _ensure_names_on_calc_sheet(ws, names: list[str]) -> None:
+    existing = _names_in_column(ws, 1, end=250)
+    known = {name.casefold() for _, name in existing}
+    missing = [name for name in names if name.casefold() not in known]
+    if not missing:
+        return
+
+    donor_row = None
+    last_name_row = 2
+    totals_row = None
+    scan_end = max(ws.max_row or 1, 80)
+    for row in range(1, scan_end + 1):
+        name_value = ws.cell(row, 1).value
+        total_value = ws.cell(row, 2).value
+        if _is_person_name(name_value):
+            last_name_row = row
+        if donor_row is None and isinstance(total_value, str) and total_value.startswith("=VLOOKUP("):
+            donor_row = row
+        if totals_row is None and isinstance(total_value, str) and total_value.startswith("=SUM(B"):
+            totals_row = row
+    if donor_row is None:
+        return
+
+    if totals_row is None or totals_row <= last_name_row:
+        start = last_name_row + 1
+    else:
+        free_slots = totals_row - last_name_row - 1
+        insert_count = max(0, len(missing) - free_slots)
+        old_totals_row = totals_row
+        if insert_count:
+            ws.insert_rows(totals_row, insert_count)
+            totals_row += insert_count
+        start = last_name_row + 1
+        _extend_calc_total_formulas(ws, totals_row, start + len(missing) - 1, old_totals_row)
+
+    for offset, name in enumerate(missing):
+        _clone_calc_person_row(ws, donor_row, start + offset, name)
+
+
+def sync_workbook_roster(wb: openpyxl.Workbook, extra_names: list[str] | None = None) -> None:
+    """
+    Put every known surname on «Расчет» and on the day-sheet ФИО column.
+
+    Wages on «Расчет» are VLOOKUP by exact name. A person present on the day
+    sheet but missing from column A (for example «Моисеев А.Д.») never shows a total.
+    """
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        cleaned = _clean_person_name(name)
+        if not _is_person_name(cleaned):
+            return
+        key = cleaned.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        ordered.append(cleaned)
+
+    for name in _load_staff_names():
+        add(name)
+    for extra in extra_names or []:
+        add(extra)
+
+    people_sheets = []
+    if config.SHEET_TEMPLATE in wb.sheetnames:
+        people_sheets.append(wb[config.SHEET_TEMPLATE])
+    for title in wb.sheetnames:
+        if _DAY_SHEET_RE.match(title):
+            people_sheets.append(wb[title])
+
+    for ws in people_sheets:
+        for _, name in _names_in_column(ws, config.COL_PEOPLE_SUM_NAME):
+            add(name)
+    if config.SHEET_CALC in wb.sheetnames:
+        for _, name in _names_in_column(wb[config.SHEET_CALC], 1, end=250):
+            add(name)
+
+    for ws in people_sheets:
+        _ensure_names_on_people_sheet(ws, ordered)
+    if config.SHEET_CALC in wb.sheetnames:
+        _ensure_names_on_calc_sheet(wb[config.SHEET_CALC], ordered)
+
+
 def _update_calc_dates(ws, year: int, month: int) -> None:
     """Row 2, cols F.. = days 1..31 for the month."""
     days_in_month = calendar.monthrange(year, month)[1]
@@ -334,6 +548,7 @@ def create_month_workbook(
         _reset_day_sheets(wb, year, month)
         if config.SHEET_CALC in wb.sheetnames:
             _update_calc_dates(wb[config.SHEET_CALC], year, month)
+        sync_workbook_roster(wb)
         try:
             wb.calculation.calcMode = "auto"
             wb.calculation.fullCalcOnLoad = True

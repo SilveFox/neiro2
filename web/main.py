@@ -17,7 +17,7 @@ from core import config
 from core.excel_writer import append_calc_to_workbook, ensure_working_workbook, get_written_log
 from core.model_settings import get_active_model, model_settings_payload, set_active_model
 from core.parser import ParseError, parse_report_text, parse_report_text_rules, validate_report
-from core.report_db import list_reports, save_report
+from core.report_db import create_site, list_reports, list_sites, query_db_rows, save_report
 from core.pricing import (
     PriceList,
     calculate_report,
@@ -115,6 +115,11 @@ class SaveReportDbRequest(BaseModel):
     calculation: dict[str, Any] | None = None
     source_text: str | None = None
     report_date: str | None = None
+    site_id: int | None = None
+
+
+class SiteCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
 
 
 def _extract_upload_text(filename: str, data: bytes) -> str:
@@ -362,6 +367,7 @@ def api_reports_save(body: SaveReportDbRequest):
             report,
             calculation=calc_dict,
             source_text=body.source_text,
+            site_id=body.site_id,
         )
         return result
     except ParseError as exc:
@@ -379,6 +385,53 @@ def api_reports_list(limit: int = 50):
         return {"ok": True, "items": list_reports(limit=limit)}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/sites")
+def api_sites_list():
+    try:
+        payload = list_sites()
+        return {"ok": True, **payload}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/sites")
+def api_sites_create(body: SiteCreateRequest):
+    try:
+        return create_site(body.name)
+    except ValueError as exc:
+        status = 409 if "уже есть" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("sites/create failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
+
+
+@app.get("/api/db/rows")
+def api_db_rows(
+    site_id: int | None = None,
+    unassigned: bool = False,
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    fio: str = "",
+    limit: int = 1000,
+):
+    try:
+        payload = query_db_rows(
+            site_id=site_id,
+            unassigned=unassigned,
+            date_from=date_from,
+            date_to=date_to,
+            fio=fio,
+            limit=limit,
+        )
+        return {"ok": True, **payload}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("db/rows failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
 @app.get("/api/reports/{report_id}")

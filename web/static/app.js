@@ -148,14 +148,32 @@
     if (navToggle) navToggle.setAttribute("aria-expanded", "false");
   }
 
-  function showView(name) {
+  const VIEW_NAMES = ["report", "price", "aliases", "settings", "excel-log", "db", "help"];
+  let currentView = "";
+
+  function viewFromHash() {
+    const name = (location.hash || "#report").replace(/^#/, "") || "report";
+    return VIEW_NAMES.includes(name) ? name : "report";
+  }
+
+  function showView(name, fromHash) {
+    const same = currentView === name;
     document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
     document.querySelectorAll(".nav-link").forEach((a) => {
       a.classList.toggle("active", a.dataset.nav === name);
     });
     const view = document.getElementById(`view-${name}`);
     if (view) view.classList.add("active");
-    if (name === "report") refreshWorkbooks();
+    currentView = name;
+    if (!fromHash && location.hash !== `#${name}`) location.hash = name;
+    if (same) {
+      closeMobileNav();
+      return;
+    }
+    if (name === "report") {
+      refreshWorkbooks();
+      loadSites().catch(() => {});
+    }
     if (name === "price") loadPrice();
     if (name === "aliases") loadAliases();
     if (name === "settings") {
@@ -165,7 +183,7 @@
       loadModelSettings();
     }
     if (name === "excel-log") loadExcelLog();
-    location.hash = name;
+    if (name === "db") loadDatabaseView();
     closeMobileNav();
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -258,6 +276,30 @@
         }
       });
     });
+  }
+
+  function fitFioInput(input) {
+    if (!input) return;
+    const text = input.value || input.placeholder || "ФИО";
+    let probe = fitFioInput.probe;
+    if (!probe) {
+      probe = document.createElement("span");
+      probe.setAttribute("aria-hidden", "true");
+      probe.style.cssText = "position:fixed;left:-9999px;top:0;visibility:hidden;white-space:pre;pointer-events:none;";
+      document.body.appendChild(probe);
+      fitFioInput.probe = probe;
+    }
+    const cs = getComputedStyle(input);
+    probe.style.font = cs.font;
+    probe.style.letterSpacing = cs.letterSpacing;
+    probe.textContent = text;
+    const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    const border = (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
+    input.style.width = `${Math.ceil(probe.getBoundingClientRect().width + pad + border + 10)}px`;
+  }
+
+  function fitAllFioInputs() {
+    previewBody.querySelectorAll('input[data-f="fio"]').forEach(fitFioInput);
   }
 
   function showCalc(calculation) {
@@ -372,6 +414,7 @@
           const val = fioInput.value;
           previewBody.querySelectorAll(`tr[data-w="${wi}"] input[data-f="fio"]`).forEach((inp) => {
             if (inp !== fioInput) inp.value = val;
+            fitFioInput(inp);
           });
         });
         previewBody.appendChild(tr);
@@ -389,6 +432,7 @@
     const date = calculation?.report_date || report.report_date || reportDate.value || "—";
     previewMeta.textContent = `Дата ${date} · работ: ${jobCount} · не найдено: ${calculation?.unmatched_count ?? unmatched.length}`;
     previewTotal.textContent = calculation ? `Итого: ${formatMoney(calculation.grand_total)}` : "";
+    fitAllFioInputs();
     btnExcel.disabled = false;
     setPreviewDirty(false);
     setStep(3);
@@ -786,6 +830,7 @@
         calculation = dataCalc.calculation;
         showCalc(calculation);
       }
+      const siteRaw = saveSiteSelect && saveSiteSelect.value ? Number(saveSiteSelect.value) : null;
       const res = await fetch("/api/reports/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -794,6 +839,7 @@
           calculation,
           source_text: reportText.value.trim() || null,
           report_date: report.report_date,
+          site_id: Number.isFinite(siteRaw) ? siteRaw : null,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -804,7 +850,8 @@
       const msg = data.message || `Сохранено в БД id=${data.id}`;
       log(`${msg}. Итого: ${data.grand_total ?? "—"}`);
       if (dbSaveStatus) {
-        dbSaveStatus.textContent = `Сохранено · id ${data.id} · ${data.workers_names || data.report_date || ""} · работ ${data.jobs_count ?? "—"} · ${data.grand_total ?? 0} ₽`;
+        const siteLabel = data.site_name ? ` · ${data.site_name}` : "";
+        dbSaveStatus.textContent = `Сохранено · id ${data.id}${siteLabel} · ${data.workers_names || data.report_date || ""} · работ ${data.jobs_count ?? "—"} · ${data.grand_total ?? 0} ₽`;
       }
     } catch (e) {
       log(`Ошибка БД: ${e.message}`);
@@ -1647,6 +1694,228 @@
   }
 
   $("btnRefreshLog").addEventListener("click", loadExcelLog);
+
+  /* -------- database browser -------- */
+  const saveSiteSelect = $("saveSiteSelect");
+  const dbBody = $("dbBody");
+  const dbSummary = $("dbSummary");
+  const dbStatus = $("dbStatus");
+  const dbSiteStatus = $("dbSiteStatus");
+  const dbSiteSelect = $("dbSiteSelect");
+  const dbDateFrom = $("dbDateFrom");
+  const dbDateTo = $("dbDateTo");
+  const dbFio = $("dbFio");
+  const siteList = $("siteList");
+  const newSiteName = $("newSiteName");
+  let dbSitesPayload = { sites: [], unassigned_count: 0, reports_total: 0 };
+  let dbFilter = { site: "", from: "", to: "", fio: "" };
+
+  function formatDateRu(iso) {
+    if (!iso) return "—";
+    const [y, m, d] = String(iso).slice(0, 10).split("-");
+    if (!y || !m || !d) return String(iso);
+    return `${d}.${m}.${y}`;
+  }
+
+  function formatQty(n) {
+    if (n == null || n === "") return "—";
+    const v = Number(n);
+    if (Number.isNaN(v)) return "—";
+    return v.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+  }
+
+  function renderSiteControls() {
+    const sites = dbSitesPayload.sites || [];
+    const savedSite = saveSiteSelect ? saveSiteSelect.value : "";
+    if (saveSiteSelect) {
+      saveSiteSelect.innerHTML = `<option value="">Без участка</option>${sites
+        .map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`)
+        .join("")}`;
+      if ([...saveSiteSelect.options].some((o) => o.value === savedSite)) {
+        saveSiteSelect.value = savedSite;
+      }
+    }
+    if (dbSiteSelect) {
+      dbSiteSelect.innerHTML = `<option value="">Все участки</option><option value="__none__">Без участка</option>${sites
+        .map((s) => `<option value="${s.id}">${escapeHtml(s.name)}</option>`)
+        .join("")}`;
+      if ([...dbSiteSelect.options].some((o) => o.value === dbFilter.site)) {
+        dbSiteSelect.value = dbFilter.site;
+      } else {
+        dbFilter.site = "";
+        dbSiteSelect.value = "";
+      }
+    }
+    if (!siteList) return;
+    const items = [
+      { value: "", label: "Все участки", count: dbSitesPayload.reports_total || 0 },
+      ...sites.map((s) => ({
+        value: String(s.id),
+        label: s.name,
+        count: s.reports_count || 0,
+      })),
+      { value: "__none__", label: "Без участка", count: dbSitesPayload.unassigned_count || 0 },
+    ];
+    siteList.innerHTML = "";
+    for (const item of items) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `site-item${dbFilter.site === item.value ? " active" : ""}`;
+      btn.innerHTML = `<span>${escapeHtml(item.label)}</span><span class="site-count">${item.count}</span>`;
+      btn.addEventListener("click", () => {
+        dbFilter.site = item.value;
+        if (dbSiteSelect) dbSiteSelect.value = item.value;
+        renderSiteControls();
+        loadDbRows();
+      });
+      siteList.appendChild(btn);
+    }
+  }
+
+  async function loadSites() {
+    const res = await fetch("/api/sites");
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || "Не удалось загрузить участки");
+    dbSitesPayload = data;
+    renderSiteControls();
+    return data;
+  }
+
+  function syncDbFilterFromForm() {
+    dbFilter = {
+      site: dbSiteSelect ? dbSiteSelect.value : "",
+      from: dbDateFrom ? dbDateFrom.value : "",
+      to: dbDateTo ? dbDateTo.value : "",
+      fio: dbFio ? dbFio.value.trim() : "",
+    };
+  }
+
+  function writeDbFilterToForm() {
+    if (dbSiteSelect) dbSiteSelect.value = dbFilter.site;
+    if (dbDateFrom) dbDateFrom.value = dbFilter.from;
+    if (dbDateTo) dbDateTo.value = dbFilter.to;
+    if (dbFio) dbFio.value = dbFilter.fio;
+  }
+
+  async function loadDbRows() {
+    if (!dbBody) return;
+    if (dbStatus) dbStatus.textContent = "";
+    const params = new URLSearchParams();
+    if (dbFilter.site === "__none__") params.set("unassigned", "true");
+    else if (dbFilter.site) params.set("site_id", dbFilter.site);
+    if (dbFilter.from) params.set("from", dbFilter.from);
+    if (dbFilter.to) params.set("to", dbFilter.to);
+    if (dbFilter.fio) params.set("fio", dbFilter.fio);
+    try {
+      const res = await fetch(`/api/db/rows?${params.toString()}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Не удалось прочитать базу");
+      const rows = data.rows || [];
+      const summary = data.summary || {};
+      if (dbSummary) {
+        dbSummary.innerHTML = `
+          <span class="db-stat">Отчётов: ${summary.reports ?? 0}</span>
+          <span class="db-stat">Строк: ${summary.jobs ?? 0}</span>
+          <span class="db-stat">ФИО: ${summary.workers ?? 0}</span>
+          <span class="db-stat">Сумма: ${formatMoney(summary.amount)} ₽</span>`;
+      }
+      dbBody.innerHTML = "";
+      if (!rows.length) {
+        dbBody.innerHTML = `<tr class="empty-row"><td colspan="8">Нет записей по этому фильтру. Сохраните отчёт кнопкой «Сохранить в БД».</td></tr>`;
+      } else {
+        for (const row of rows) {
+          const tr = document.createElement("tr");
+          if (!row.matched) tr.classList.add("unmatched");
+          const work = row.matched_name || row.task_name || "—";
+          tr.innerHTML = `
+            <td>${escapeHtml(formatDateRu(row.report_date))}</td>
+            <td>${escapeHtml(row.site_name || "—")}</td>
+            <td>${escapeHtml(row.worker_name || "—")}</td>
+            <td>${escapeHtml(work)}</td>
+            <td class="num">${formatQty(row.volume)}</td>
+            <td>${escapeHtml(row.unit || "—")}</td>
+            <td class="num">${row.unit_price == null ? "—" : formatMoney(row.unit_price)}</td>
+            <td class="num">${row.amount == null ? "—" : formatMoney(row.amount)}</td>`;
+          tr.title = `Отчёт #${row.report_id}`;
+          dbBody.appendChild(tr);
+        }
+      }
+      if (dbStatus && summary.truncated) {
+        dbStatus.textContent = `Показаны первые ${rows.length} строк. Сузьте фильтр, чтобы увидеть остальные.`;
+      }
+    } catch (e) {
+      if (dbStatus) dbStatus.textContent = e.message;
+      dbBody.innerHTML = `<tr class="empty-row"><td colspan="8">${escapeHtml(e.message)}</td></tr>`;
+    }
+  }
+
+  async function loadDatabaseView() {
+    try {
+      await loadSites();
+      writeDbFilterToForm();
+      await loadDbRows();
+    } catch (e) {
+      if (dbStatus) dbStatus.textContent = e.message;
+    }
+  }
+
+  async function createSite(event) {
+    event.preventDefault();
+    if (dbSiteStatus) dbSiteStatus.textContent = "";
+    const name = (newSiteName && newSiteName.value.trim()) || "";
+    if (!name) {
+      if (dbSiteStatus) dbSiteStatus.textContent = "Введите название участка";
+      return;
+    }
+    try {
+      const res = await fetch("/api/sites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Не удалось создать участок");
+      if (newSiteName) newSiteName.value = "";
+      if (dbSiteStatus) dbSiteStatus.textContent = data.message || `Участок «${data.name}» создан`;
+      dbFilter.site = String(data.id);
+      if (saveSiteSelect) saveSiteSelect.value = String(data.id);
+      await loadSites();
+      if (saveSiteSelect) saveSiteSelect.value = String(data.id);
+      await loadDbRows();
+    } catch (e) {
+      if (dbSiteStatus) dbSiteStatus.textContent = e.message;
+    }
+  }
+
+  const siteCreateForm = $("siteCreateForm");
+  const dbFilterForm = $("dbFilterForm");
+  if (siteCreateForm) siteCreateForm.addEventListener("submit", createSite);
+  if (dbFilterForm) {
+    dbFilterForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      syncDbFilterFromForm();
+      renderSiteControls();
+      loadDbRows();
+    });
+  }
+  const btnDbReset = $("btnDbReset");
+  if (btnDbReset) {
+    btnDbReset.addEventListener("click", () => {
+      dbFilter = { site: "", from: "", to: "", fio: "" };
+      writeDbFilterToForm();
+      renderSiteControls();
+      loadDbRows();
+    });
+  }
+  const btnDbRefresh = $("btnDbRefresh");
+  if (btnDbRefresh) btnDbRefresh.addEventListener("click", loadDatabaseView);
+  if (dbSiteSelect) {
+    dbSiteSelect.addEventListener("change", () => {
+      dbFilter.site = dbSiteSelect.value;
+      renderSiteControls();
+      loadDbRows();
+    });
+  }
   $("btnEmployeesSave").addEventListener("click", saveEmployees);
   if (btnModelSave) btnModelSave.addEventListener("click", saveModel);
   if (btnModelRefresh) btnModelRefresh.addEventListener("click", loadModelSettings);
@@ -1692,8 +1961,8 @@
     }
   });
 
-  const initial = (location.hash || "#report").replace("#", "") || "report";
-  showView(["report", "price", "aliases", "settings", "excel-log", "help"].includes(initial) ? initial : "report");
+  window.addEventListener("hashchange", () => showView(viewFromHash(), true));
+  showView(viewFromHash());
   refreshWorkbooks();
   setStep(1);
   log("Готово. Загрузите отчёт или вставьте текст.");

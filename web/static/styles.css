@@ -489,6 +489,30 @@ textarea {
   box-sizing: border-box;
 }
 
+/* ФИО в предпросмотре — ширина по тексту, без обрезки инициалов.
+   Таблица растёт и прокручивается, остальные колонки не сжимаются. */
+#previewTable {
+  width: max-content;
+  min-width: 100%;
+}
+
+#previewTable th:first-child,
+#previewTable td:first-child {
+  width: 1%;
+  white-space: nowrap;
+}
+
+#previewTable th:nth-child(2),
+#previewTable td:nth-child(2) {
+  min-width: 16rem;
+}
+
+.data-table.editable input[data-f="fio"] {
+  width: auto;
+  min-width: 12ch;
+  max-width: none;
+}
+
 .data-table.editable input:focus,
 .data-table.editable textarea:focus,
 .data-table.editable select:focus {
@@ -696,6 +720,111 @@ textarea {
 .settings-action-card {
   border-color: #c5d6f5;
   background: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+}
+
+.db-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.db-sites,
+.db-main {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  min-width: 0;
+}
+
+.db-sites h2 {
+  margin: 0 0 12px;
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+}
+
+.site-create .btn { width: 100%; }
+
+.site-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.site-item {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.site-item:hover { border-color: #b7c9f0; }
+
+.site-item.active {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.site-count {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+  background: #eef2f8;
+  border-radius: 999px;
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+
+.site-item.active .site-count {
+  background: #fff;
+  color: var(--blue);
+}
+
+.db-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.db-filters .field { margin-bottom: 0; }
+
+.db-filter-actions {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.db-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 8px;
+}
+
+.db-stat {
+  background: #f7f9fc;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.db-main .table-wrap.full {
+  max-height: calc(100vh - 340px);
 }
 
 .settings-actions {
@@ -921,7 +1050,9 @@ code {
 
   .report-layout,
   .settings-grid,
-  .help-layout {
+  .help-layout,
+  .db-layout,
+  .db-filters {
     grid-template-columns: 1fr;
   }
 

@@ -17,11 +17,27 @@ def db_path() -> Path:
     return Path(path)
 
 
+def _fold(value: object) -> str:
+    """Unicode casefold for Cyrillic-aware search (SQLite NOCASE is ASCII-only)."""
+    return str(value or "").casefold()
+
+
+def _like_contains(raw: str) -> str:
+    escaped = (
+        str(raw)
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    return f"%{escaped}%"
+
+
 def connect() -> sqlite3.Connection:
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
+    conn.create_function("fold", 1, _fold, deterministic=True)
     return conn
 
 
@@ -81,6 +97,12 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
                 FOREIGN KEY(worker_id) REFERENCES report_workers(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS sites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_reports_date ON reports(report_date);
             CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);
             CREATE INDEX IF NOT EXISTS idx_report_workers_report ON report_workers(report_id);
@@ -89,16 +111,93 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
             CREATE INDEX IF NOT EXISTS idx_report_jobs_task ON report_jobs(task_name);
             """
         )
-        # Миграция старых БД без читаемых колонок
+        # Миграция старых БД без читаемых колонок и участка
         cols = {r[1] for r in conn.execute("PRAGMA table_info(reports)").fetchall()}
         if "workers_names" not in cols:
             conn.execute("ALTER TABLE reports ADD COLUMN workers_names TEXT")
         if "jobs_summary" not in cols:
             conn.execute("ALTER TABLE reports ADD COLUMN jobs_summary TEXT")
+        if "site_id" not in cols:
+            conn.execute("ALTER TABLE reports ADD COLUMN site_id INTEGER")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_site ON reports(site_id)")
         conn.commit()
     finally:
         if own:
             conn.close()
+
+
+def list_sites() -> dict[str, Any]:
+    """Sites plus how many reports point at each, and the unassigned count."""
+    init_db()
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.id, s.name, s.created_at, COUNT(r.id) AS reports_count
+            FROM sites s
+            LEFT JOIN reports r ON r.site_id = s.id
+            GROUP BY s.id
+            ORDER BY fold(s.name), s.id
+            """
+        ).fetchall()
+        unassigned = conn.execute(
+            "SELECT COUNT(*) FROM reports WHERE site_id IS NULL"
+        ).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
+        return {
+            "sites": [dict(r) for r in rows],
+            "unassigned_count": int(unassigned or 0),
+            "reports_total": int(total or 0),
+        }
+    finally:
+        conn.close()
+
+
+def create_site(name: str) -> dict[str, Any]:
+    cleaned = " ".join(str(name or "").split())
+    if not cleaned:
+        raise ValueError("Укажите название участка")
+    if len(cleaned) > 80:
+        raise ValueError("Название участка не длиннее 80 символов")
+
+    init_db()
+    conn = connect()
+    try:
+        existing = conn.execute("SELECT id, name FROM sites").fetchall()
+        for row in existing:
+            if _fold(row["name"]) == _fold(cleaned):
+                raise ValueError(f"Участок «{row['name']}» уже есть")
+        created_at = datetime.now().isoformat(timespec="seconds")
+        cur = conn.execute(
+            "INSERT INTO sites (name, created_at) VALUES (?, ?)",
+            (cleaned, created_at),
+        )
+        conn.commit()
+        return {
+            "ok": True,
+            "id": int(cur.lastrowid),
+            "name": cleaned,
+            "created_at": created_at,
+            "reports_count": 0,
+            "message": f"Участок «{cleaned}» создан",
+        }
+    finally:
+        conn.close()
+
+
+def _site_name(conn: sqlite3.Connection, site_id: int | None) -> str | None:
+    if site_id is None:
+        return None
+    try:
+        sid = int(site_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Некорректный участок") from exc
+    if sid <= 0:
+        raise ValueError("Некорректный участок")
+    row = conn.execute("SELECT name FROM sites WHERE id = ?", (sid,)).fetchone()
+    if not row:
+        raise ValueError(f"Участок id={sid} не найден")
+    return str(row["name"])
 
 
 def _worker_display_name(worker: dict[str, Any]) -> str:
@@ -258,10 +357,11 @@ def save_report(
     report: dict[str, Any],
     calculation: dict[str, Any] | None = None,
     source_text: str | None = None,
+    site_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Save report (+ optional calculation) into SQLite as readable rows.
-    Tables: reports, report_workers, report_jobs.
+    Tables: reports, report_workers, report_jobs. Optional site_id → sites.
     """
     if not isinstance(report, dict):
         raise ValueError("report должен быть объектом JSON")
@@ -302,6 +402,9 @@ def save_report(
     conn = connect()
     try:
         conn.execute("PRAGMA foreign_keys = ON")
+        site_name = _site_name(conn, site_id)
+        if site_id is not None:
+            site_id = int(site_id)
         cur = conn.execute(
             """
             INSERT INTO reports (
@@ -309,8 +412,8 @@ def save_report(
                 source_text, source_text_hash,
                 report_json, calculation_json,
                 grand_total, unmatched_count, workers_count, jobs_count,
-                model_name, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                model_name, created_at, site_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 report_date,
@@ -326,6 +429,7 @@ def save_report(
                 jobs_count,
                 model_name,
                 created_at,
+                None if site_id is None else int(site_id),
             ),
         )
         report_id = int(cur.lastrowid)
@@ -394,8 +498,14 @@ def save_report(
         "jobs_count": jobs_count,
         "model_name": model_name,
         "created_at": created_at,
+        "site_id": site_id,
+        "site_name": site_name,
         "db_path": str(db_path()),
-        "message": f"Отчёт сохранён в БД (id={report_id}, работ={jobs_count})",
+        "message": (
+            f"Отчёт сохранён в БД (id={report_id}, работ={jobs_count}"
+            + (f", участок «{site_name}»" if site_name else "")
+            + ")"
+        ),
     }
 
 
@@ -405,11 +515,13 @@ def list_reports(limit: int = 50) -> list[dict[str, Any]]:
     try:
         rows = conn.execute(
             """
-            SELECT id, report_date, workers_names, jobs_summary,
-                   grand_total, unmatched_count,
-                   workers_count, jobs_count, model_name, created_at
-            FROM reports
-            ORDER BY id DESC
+            SELECT r.id, r.report_date, r.workers_names, r.jobs_summary,
+                   r.grand_total, r.unmatched_count,
+                   r.workers_count, r.jobs_count, r.model_name, r.created_at,
+                   r.site_id, s.name AS site_name
+            FROM reports r
+            LEFT JOIN sites s ON s.id = r.site_id
+            ORDER BY r.id DESC
             LIMIT ?
             """,
             (max(1, min(int(limit), 500)),),
@@ -426,10 +538,13 @@ def get_report_details(report_id: int) -> dict[str, Any] | None:
     try:
         head = conn.execute(
             """
-            SELECT id, report_date, workers_names, jobs_summary,
-                   grand_total, unmatched_count, workers_count, jobs_count,
-                   model_name, created_at, source_text
-            FROM reports WHERE id = ?
+            SELECT r.id, r.report_date, r.workers_names, r.jobs_summary,
+                   r.grand_total, r.unmatched_count, r.workers_count, r.jobs_count,
+                   r.model_name, r.created_at, r.source_text,
+                   r.site_id, s.name AS site_name
+            FROM reports r
+            LEFT JOIN sites s ON s.id = r.site_id
+            WHERE r.id = ?
             """,
             (report_id,),
         ).fetchone()
@@ -458,6 +573,138 @@ def get_report_details(report_id: int) -> dict[str, Any] | None:
             "report": dict(head),
             "workers": [dict(r) for r in workers],
             "jobs": [dict(r) for r in jobs],
+        }
+    finally:
+        conn.close()
+
+
+def _iso_date(value: str | None, field: str) -> str | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    raw = raw[:10]
+    try:
+        datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(f"Некорректная дата «{field}»: ожидается ГГГГ-ММ-ДД") from exc
+    return raw
+
+
+def query_db_rows(
+    *,
+    site_id: int | None = None,
+    unassigned: bool = False,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    fio: str | None = None,
+    limit: int = 1000,
+) -> dict[str, Any]:
+    """
+    Flat job rows for the database browser.
+    Filters: site (or unassigned), report date range, worker name substring.
+    """
+    if unassigned and site_id is not None:
+        raise ValueError("Укажите либо участок, либо «без участка»")
+
+    d_from = _iso_date(date_from, "from")
+    d_to = _iso_date(date_to, "to")
+    if d_from and d_to and d_from > d_to:
+        raise ValueError("Дата «с» позже даты «по»")
+
+    fio_raw = " ".join(str(fio or "").split())
+    if len(fio_raw) > 120:
+        raise ValueError("ФИО для поиска не длиннее 120 символов")
+
+    where = ["1 = 1"]
+    params: list[Any] = []
+    if unassigned:
+        where.append("r.site_id IS NULL")
+    elif site_id is not None:
+        try:
+            sid = int(site_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Некорректный участок") from exc
+        if sid <= 0:
+            raise ValueError("Некорректный участок")
+        where.append("r.site_id = ?")
+        params.append(sid)
+
+    if d_from:
+        where.append("r.report_date >= ?")
+        params.append(d_from)
+    if d_to:
+        where.append("r.report_date <= ?")
+        params.append(d_to)
+    if fio_raw:
+        pattern = _like_contains(_fold(fio_raw))
+        where.append("fold(j.worker_name) LIKE ? ESCAPE '\\'")
+        params.append(pattern)
+
+    cap = max(1, min(int(limit), 2000))
+    sql_where = " AND ".join(where)
+    init_db()
+    conn = connect()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+                j.id AS job_id,
+                r.id AS report_id,
+                r.report_date,
+                r.created_at,
+                r.site_id,
+                s.name AS site_name,
+                j.worker_name,
+                j.task_name,
+                j.job_description,
+                j.service_type,
+                j.volume,
+                j.unit,
+                j.matched,
+                j.matched_name,
+                j.unit_price,
+                j.amount
+            FROM report_jobs j
+            JOIN reports r ON r.id = j.report_id
+            LEFT JOIN sites s ON s.id = r.site_id
+            WHERE {sql_where}
+            ORDER BY r.report_date DESC, r.id DESC, j.worker_no, j.job_no
+            LIMIT ?
+            """,
+            (*params, cap),
+        ).fetchall()
+        summary = conn.execute(
+            f"""
+            SELECT
+                COUNT(DISTINCT r.id) AS reports,
+                COUNT(j.id) AS jobs,
+                COUNT(DISTINCT j.worker_name) AS workers,
+                COALESCE(SUM(j.amount), 0) AS amount
+            FROM report_jobs j
+            JOIN reports r ON r.id = j.report_id
+            LEFT JOIN sites s ON s.id = r.site_id
+            WHERE {sql_where}
+            """,
+            params,
+        ).fetchone()
+        return {
+            "rows": [dict(r) for r in rows],
+            "summary": {
+                "reports": int(summary["reports"] or 0),
+                "jobs": int(summary["jobs"] or 0),
+                "workers": int(summary["workers"] or 0),
+                "amount": float(summary["amount"] or 0),
+                "truncated": int(summary["jobs"] or 0) > len(rows),
+            },
+            "filters": {
+                "site_id": None if unassigned or site_id is None else int(site_id),
+                "unassigned": bool(unassigned),
+                "date_from": d_from,
+                "date_to": d_to,
+                "fio": fio_raw,
+            },
         }
     finally:
         conn.close()

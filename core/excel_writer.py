@@ -31,6 +31,7 @@ from core.pricing import CalcResult, WorkerCalc
 from core.workbook_factory import (
     get_active_workbook,
     sanitize_workbook,
+    sync_workbook_roster,
     workbook_for_report_date,
     written_log_for,
     year_month_from_path,
@@ -229,7 +230,9 @@ def _update_people_sum_column(day_ws, per_person_totals: dict[str, float]) -> No
     Раньше всем остальным ставили 0 и затирали формулы SUMIF / прошлые суммы —
     из‑за этого в скачанном Excel «Наработка» и лист «Расчет» выглядели пустыми.
     """
-    start_row, end_row = config.DAY_PEOPLE_SUM_RANGE
+    start_row = config.SUM_PEOPLE_START_ROW
+    # Ниже старого предела 40: новые фамилии дописываются в конец списка K.
+    end_row = max(config.SUM_PEOPLE_END_ROW, 150)
     for r in range(start_row, end_row + 1):
         name_cell = day_ws.cell(r, config.COL_PEOPLE_SUM_NAME)
         wage_cell = day_ws.cell(r, config.COL_PEOPLE_SUM_WAGE)
@@ -280,6 +283,16 @@ def append_calc_to_workbook(
         raise KeyError(f"В книге нет листа дня '{day_name}'")
 
     day_ws = wb[day_name]
+    roster_names: list[str] = []
+    for worker in calc.workers:
+        members = [str(m).strip() for m in (worker.members or []) if str(m).strip()]
+        if members:
+            roster_names.extend(members)
+        else:
+            roster_names.extend(
+                part.strip() for part in str(worker.raw_worker_name or "").split(",") if part.strip()
+            )
+    sync_workbook_roster(wb, roster_names)
     _set_date(day_ws, calc.report_date)
 
     blocks_written = []

@@ -18,6 +18,7 @@ from core.workbook_factory import (
     list_month_workbooks,
     sanitize_workbook,
     sanitize_workbook_title,
+    sync_workbook_roster,
     written_log_for,
 )
 
@@ -323,6 +324,58 @@ class MonthWorkbookTests(unittest.TestCase):
             finally:
                 config.WORKBOOKS_DIR = old_dir
                 config.ACTIVE_WORKBOOK_META = old_meta
+
+
+class CalcRosterTests(unittest.TestCase):
+    def test_calc_sheet_gets_missing_surnames(self):
+        src = config.SOURCE_WORKBOOK
+        self.assertTrue(src.exists())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "book.xlsx"
+            import shutil
+
+            shutil.copy2(src, path)
+            wb = openpyxl.load_workbook(path)
+            try:
+                sync_workbook_roster(wb, extra_names=["Тестов Т.Т."])
+                calc = wb["Расчет"]
+                names = {}
+                for row in range(1, 80):
+                    value = calc.cell(row, 1).value
+                    if isinstance(value, str) and value.strip() and value.strip() != "ФИО":
+                        names[value.strip()] = row
+                for required in ("Моисеев А.Д.", "Зимин А.Вал.", "Емельянов Е.Е.", "Черемисин В.В.", "Тестов Т.Т."):
+                    self.assertIn(required, names)
+                moiseev_row = names["Моисеев А.Д."]
+                formula = str(calc.cell(moiseev_row, 2).value)
+                self.assertIn(f"VLOOKUP(A{moiseev_row},", formula)
+                self.assertNotIn("VLOOKUP(A3,", formula)
+                day = wb["01"]
+                day_names = [
+                    str(day.cell(row, 11).value).strip()
+                    for row in range(1, 80)
+                    if isinstance(day.cell(row, 11).value, str)
+                ]
+                self.assertIn("Тестов Т.Т.", day_names)
+                self.assertIn("Карандак В.Е.", day_names)
+                test_row = day_names.index("Тестов Т.Т.") + 1
+                # index is into the filtered list, not the sheet row — find the real row
+                real_row = next(
+                    row
+                    for row in range(1, 80)
+                    if str(day.cell(row, 11).value or "").strip() == "Тестов Т.Т."
+                )
+                self.assertEqual(day.cell(real_row, 12).value, f"=SUMIF(C:C,K{real_row},I:I)")
+                self.assertNotEqual(test_row, 0)
+                totals = next(
+                    str(calc.cell(row, 2).value)
+                    for row in range(1, 90)
+                    if isinstance(calc.cell(row, 2).value, str) and str(calc.cell(row, 2).value).startswith("=SUM(B")
+                )
+                last_person = max(names.values())
+                self.assertIn(f":B{last_person})", totals)
+            finally:
+                wb.close()
 
 
 if __name__ == "__main__":
