@@ -117,7 +117,7 @@
   }
 
   function setBusy(busy) {
-    [btnParse, btnParseRules, btnCalc, btnSaveDb, btnExcel, btnApplyPreview, btnDownloadPeriod, btnNewMonth, btnActivateMonth, btnEditTable, btnSelectFile, btnPaste, monthSelect, monthSelectSettings].forEach((b) => {
+    [btnParse, btnParseRules, btnCalc, btnSaveDb, btnExcel, btnApplyPreview, btnDownload, btnDownloadPeriod, btnNewMonth, btnActivateMonth, btnEditTable, btnSelectFile, btnPaste, monthSelect, monthSelectSettings].forEach((b) => {
       if (b) b.disabled = busy;
     });
     if (!busy && currentCalc) btnExcel.disabled = false;
@@ -139,9 +139,11 @@
   const workbookEditStatus = $("workbookEditStatus");
   const downloadPeriodFrom = $("downloadPeriodFrom");
   const downloadPeriodTo = $("downloadPeriodTo");
+  const btnDownload = $("btnDownload");
   const btnDownloadPeriod = $("btnDownloadPeriod");
   const btnRefreshWorkbooks = $("btnRefreshWorkbooks");
   let suppressMonthChange = false;
+  let lastActiveMeta = null;
 
   function closeMobileNav() {
     if (mainNav) mainNav.classList.remove("open");
@@ -1021,6 +1023,7 @@
 
   function renderWorkbookList(data) {
     const active = data.active;
+    lastActiveMeta = active || null;
     if (activeWorkbookLabel) {
       activeWorkbookLabel.textContent = active
         ? `Активная таблица: ${workbookDisplayName(active)}`
@@ -1038,7 +1041,8 @@
     for (const item of items) {
       if (item.active) selectedActive = workbookSelectValue(item);
     }
-    const preferred = monthSelect?.value || monthSelectSettings?.value || selectedActive;
+    // Список показывает ту же книгу, что подпись «Активная таблица», а не прошлый выбор.
+    const preferred = selectedActive || monthSelect?.value || monthSelectSettings?.value || "";
     suppressMonthChange = true;
     fillMonthSelect(monthSelect, items, preferred, selectedActive);
     fillMonthSelect(monthSelectSettings, items, preferred, selectedActive);
@@ -1104,28 +1108,56 @@
     }
   }
 
-  function findWorkbookKeyForMonth(ym) {
-    if (!/^\d{4}-\d{2}$/.test(ym || "")) return "";
-    // Prefer default unnamed book, then any titled for that month
-    let titled = "";
-    for (const [key, item] of Object.entries(workbookItemsByName)) {
-      if (item.year_month !== ym) continue;
-      if (!item.title) return key;
-      if (!titled) titled = key;
-    }
-    return titled;
+  function workbookNameForDownload() {
+    const key = selectedWorkbookKey();
+    if (key && key.toLowerCase().endsWith(".xlsx")) return key;
+    const activeName = String(lastActiveMeta?.name || "").trim();
+    return activeName;
   }
 
-  function syncMonthSelectToReportDate() {
-    if (!reportDate) return;
-    const d = (reportDate.value || "").trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
-    const ym = d.slice(0, 7);
-    const key = findWorkbookKeyForMonth(ym);
-    if (!key) return;
-    if (selectedWorkbookKey() === key) return;
-    setBothMonthSelects(key);
-    activateMonth({ quiet: true, yearMonth: key });
+  async function saveExcelBlob(blob, filename) {
+    const a = document.createElement("a");
+    const href = URL.createObjectURL(blob);
+    a.href = href;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(href);
+  }
+
+  function filenameFromDisposition(header, fallback) {
+    const match = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(header || "");
+    let filename = match ? decodeURIComponent(match[1].replace(/"/g, "")) : fallback;
+    if (!filename.toLowerCase().endsWith(".xlsx")) filename += ".xlsx";
+    return filename;
+  }
+
+  async function downloadActiveExcel() {
+    const name = workbookNameForDownload();
+    if (!name) {
+      if (workbookEditStatus) workbookEditStatus.textContent = "Нет активной таблицы";
+      return;
+    }
+    setBusy(true);
+    try {
+      const url = `/api/download-excel?name=${encodeURIComponent(name)}`;
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || res.statusText);
+      }
+      const blob = await res.blob();
+      const filename = filenameFromDisposition(res.headers.get("content-disposition"), name);
+      await saveExcelBlob(blob, filename);
+      log(`Скачана таблица ${filename}`);
+      if (workbookEditStatus) workbookEditStatus.textContent = `Скачан файл ${filename}`;
+    } catch (e) {
+      log(`Ошибка скачивания: ${e.message}`);
+      if (workbookEditStatus) workbookEditStatus.textContent = e.message;
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function createMonth() {
@@ -1267,28 +1299,24 @@
       if (workbookEditStatus) workbookEditStatus.textContent = "Дата «с» не может быть позже «по»";
       return;
     }
+    const name = workbookNameForDownload();
     setBusy(true);
     try {
-      const url = `/api/download-excel-period?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-      const res = await fetch(url);
+      const params = new URLSearchParams({ from, to });
+      if (name) params.set("name", name);
+      const url = `/api/download-excel-period?${params.toString()}`;
+      const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || res.statusText);
       }
       const blob = await res.blob();
-      const cd = res.headers.get("content-disposition") || "";
-      const match = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
-      let filename = match ? decodeURIComponent(match[1].replace(/"/g, "")) : `period_${from}_${to}.xlsx`;
-      if (!filename.toLowerCase().endsWith(".xlsx")) filename += ".xlsx";
-      const a = document.createElement("a");
-      const href = URL.createObjectURL(blob);
-      a.href = href;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(href);
-      log(`Скачан файл за период ${from}…${to}`);
+      const filename = filenameFromDisposition(
+        res.headers.get("content-disposition"),
+        name || `period_${from}_${to}.xlsx`
+      );
+      await saveExcelBlob(blob, filename);
+      log(`Скачан файл ${filename} за период ${from}…${to}`);
       if (workbookEditStatus) workbookEditStatus.textContent = "";
     } catch (e) {
       log(`Ошибка скачивания за период: ${e.message}`);
@@ -1935,6 +1963,7 @@
     btnActivateMonth.addEventListener("click", () => activateMonth({ syncDate: true }));
   }
   if (btnEditTable) btnEditTable.addEventListener("click", editExistingTable);
+  if (btnDownload) btnDownload.addEventListener("click", downloadActiveExcel);
   if (btnDownloadPeriod) btnDownloadPeriod.addEventListener("click", downloadPeriodExcel);
   function onMonthSelectChange(select) {
     if (suppressMonthChange) return;
@@ -1948,10 +1977,7 @@
   }
   reportDate.addEventListener("change", () => {
     syncDateIntoEditor();
-    syncMonthSelectToReportDate();
-    updateReportWorkbookHint({
-      year_month: selectedYearMonth() || (reportDate.value || "").slice(0, 7),
-    });
+    updateReportWorkbookHint(lastActiveMeta);
   });
 
   window.addEventListener("beforeunload", (e) => {

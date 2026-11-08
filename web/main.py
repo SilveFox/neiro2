@@ -35,6 +35,7 @@ from core.workbook_factory import (
     export_workbook_period,
     get_active_meta,
     list_month_workbooks,
+    resolve_workbook_name,
     set_active_workbook,
     year_month_from_path,
 )
@@ -469,18 +470,32 @@ def api_excel(body: ExcelRequest):
         raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
-@app.get("/api/download-excel")
-def download_excel():
+def _download_workbook_path(name: str | None) -> Path:
+    """Active book, or the exact file named in the request. Never a different month book."""
     try:
-        path = ensure_working_workbook()
-        path = ensure_workbook_path_allowed(Path(path), require_month_name=False)
-    except (ValueError, FileNotFoundError) as exc:
+        if name and name.strip():
+            path = resolve_workbook_name(name)
+        else:
+            path = ensure_working_workbook()
+        return ensure_workbook_path_allowed(Path(path), require_month_name=False)
+    except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+def _excel_file_response(path: Path) -> FileResponse:
     return FileResponse(
         path,
         filename=path.name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Cache-Control": "no-store"},
     )
+
+
+@app.get("/api/download-excel")
+def download_excel(name: str | None = Query(None, description="Имя файла в data/workbooks")):
+    return _excel_file_response(_download_workbook_path(name))
 
 
 def _parse_iso_date(value: str, field: str) -> date:
@@ -495,16 +510,13 @@ def download_excel_period(
     background_tasks: BackgroundTasks,
     date_from: str = Query(..., alias="from", description="YYYY-MM-DD"),
     date_to: str = Query(..., alias="to", description="YYYY-MM-DD"),
+    name: str | None = Query(None, description="Имя файла в data/workbooks"),
 ):
     """
-    Download active workbook sliced to day sheets in [from, to].
+    Download the named (or active) workbook sliced to day sheets in [from, to].
     Sheets «Данные», «Расчет», «Шаблон» are omitted.
     """
-    path = ensure_working_workbook()
-    try:
-        path = ensure_workbook_path_allowed(Path(path), require_month_name=False)
-    except (ValueError, FileNotFoundError) as exc:
-        raise HTTPException(404, str(exc)) from exc
+    path = _download_workbook_path(name)
 
     d_from = _parse_iso_date(date_from, "from")
     d_to = _parse_iso_date(date_to, "to")
@@ -525,11 +537,7 @@ def download_excel_period(
             pass
 
     background_tasks.add_task(_cleanup, export_path)
-    return FileResponse(
-        export_path,
-        filename=export_path.name,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    return _excel_file_response(export_path)
 
 
 @app.get("/api/price")

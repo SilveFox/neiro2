@@ -607,10 +607,11 @@ def activate_year_month(year_month: str) -> dict[str, Any]:
     return set_active_workbook(paths[0], year_month)
 
 
-def activate_workbook_name(name: str) -> dict[str, Any]:
-    """Activate by basename inside data/workbooks (path traversal blocked)."""
-    base = Path(name).name
-    if base != name.replace("\\", "/").split("/")[-1]:
+def resolve_workbook_name(name: str) -> Path:
+    """Return a month workbook by basename. Does not change the active book."""
+    raw = (name or "").strip()
+    base = Path(raw).name
+    if not raw or base != raw.replace("\\", "/").split("/")[-1]:
         raise ValueError("Укажите только имя файла")
     path = (config.WORKBOOKS_DIR / base).resolve()
     try:
@@ -621,6 +622,12 @@ def activate_workbook_name(name: str) -> dict[str, Any]:
         raise ValueError("Недопустимое имя книги")
     if not path.is_file():
         raise FileNotFoundError(f"Книга не найдена: {base}")
+    return path
+
+
+def activate_workbook_name(name: str) -> dict[str, Any]:
+    """Activate by basename inside data/workbooks (path traversal blocked)."""
+    path = resolve_workbook_name(name)
     return set_active_workbook(path, year_month_from_path(path))
 
 

@@ -378,5 +378,47 @@ class CalcRosterTests(unittest.TestCase):
                 wb.close()
 
 
+class DownloadWorkbookTests(unittest.TestCase):
+    def test_download_returns_named_book_not_the_other_active_one(self):
+        from urllib.parse import unquote
+
+        from fastapi.testclient import TestClient
+
+        from core.workbook_factory import get_active_meta, resolve_workbook_name
+        from web.main import app
+
+        self.assertTrue(config.SOURCE_WORKBOOK.exists())
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            old_dir = config.WORKBOOKS_DIR
+            old_meta = config.ACTIVE_WORKBOOK_META
+            config.WORKBOOKS_DIR = tmp_path / "workbooks"
+            config.WORKBOOKS_DIR.mkdir()
+            config.ACTIVE_WORKBOOK_META = tmp_path / "active_workbook.json"
+            try:
+                july = create_month_workbook(2026, 7, activate=True)
+                august = create_month_workbook(2026, 8, activate=True, title="Гарантия")
+                self.assertEqual(resolve_workbook_name(july.name).resolve(), july.resolve())
+                self.assertEqual(get_active_meta()["name"], august.name)
+                with self.assertRaises(ValueError):
+                    resolve_workbook_name(r"..\workbook.xlsx")
+
+                client = TestClient(app)
+                res = client.get("/api/download-excel", params={"name": july.name})
+                self.assertEqual(res.status_code, 200)
+                self.assertIn(july.name, res.headers["content-disposition"])
+                self.assertEqual(res.content[:2], b"PK")
+                self.assertIn("no-store", res.headers.get("cache-control", ""))
+                self.assertEqual(get_active_meta()["name"], august.name)
+
+                active = client.get("/api/download-excel")
+                self.assertEqual(active.status_code, 200)
+                self.assertIn(august.name, unquote(active.headers["content-disposition"]))
+                self.assertNotIn(july.name, active.headers["content-disposition"])
+            finally:
+                config.WORKBOOKS_DIR = old_dir
+                config.ACTIVE_WORKBOOK_META = old_meta
+
+
 if __name__ == "__main__":
     unittest.main()
