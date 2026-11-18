@@ -238,7 +238,8 @@ def _flatten_for_save(
     calc_workers = _calc_workers_index(calculation)
     report_workers = report.get("workers") or []
     # Если есть расчёт — берём работы из него (там matched_name, тариф, сумма).
-    use_calc_jobs = bool(calc_workers)
+    # Пустой список после отсечения работ вне прайса не подменяется исходным отчётом.
+    use_calc_jobs = isinstance(calculation, dict)
 
     worker_rows: list[dict[str, Any]] = []
     job_rows: list[dict[str, Any]] = []
@@ -247,7 +248,7 @@ def _flatten_for_save(
 
     source_workers = calc_workers if use_calc_jobs else report_workers
 
-    for w_i, worker in enumerate(source_workers):
+    for worker in source_workers:
         if not isinstance(worker, dict):
             continue
 
@@ -276,9 +277,23 @@ def _flatten_for_save(
             per_f = None
             jobs = worker.get("performed_jobs") or []
 
+        if not isinstance(jobs, list):
+            jobs = []
+
+        kept_jobs: list[dict[str, Any]] = []
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            # Расчёт уже знает, есть ли работа в прайсе. Чужие строки в базу не пишем.
+            if use_calc_jobs and not job.get("matched"):
+                continue
+            kept_jobs.append(job)
+        if not kept_jobs:
+            continue
+
         worker_rows.append(
             {
-                "worker_no": w_i + 1,
+                "worker_no": len(worker_rows) + 1,
                 "worker_name": w_name,
                 "members": members_s,
                 "headcount": headcount,
@@ -287,14 +302,9 @@ def _flatten_for_save(
             }
         )
         all_names.append(w_name)
+        worker_no = len(worker_rows)
 
-        if not isinstance(jobs, list):
-            jobs = []
-
-        for j_i, job in enumerate(jobs):
-            if not isinstance(job, dict):
-                continue
-
+        for j_i, job in enumerate(kept_jobs):
             if use_calc_jobs:
                 matched_name = job.get("matched_name")
                 matched = 1 if job.get("matched") else 0
@@ -330,7 +340,7 @@ def _flatten_for_save(
 
             job_rows.append(
                 {
-                    "worker_no": w_i + 1,
+                    "worker_no": worker_no,
                     "worker_name": w_name,
                     "job_no": j_i + 1,
                     "task_name": task_name,
@@ -351,6 +361,39 @@ def _flatten_for_save(
     workers_names = "; ".join(all_names)
     jobs_summary = " | ".join(summary_parts)
     return worker_rows, job_rows, workers_names, jobs_summary
+
+
+def _calculation_without_unpriced(
+    calculation: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    """Drop jobs the price list did not match. Returns (calc, skipped count)."""
+    skipped = 0
+    workers: list[dict[str, Any]] = []
+    grand = 0.0
+    for worker in calculation.get("workers") or []:
+        if not isinstance(worker, dict):
+            continue
+        kept: list[dict[str, Any]] = []
+        for job in worker.get("jobs") or []:
+            if isinstance(job, dict) and job.get("matched"):
+                kept.append(job)
+            else:
+                skipped += 1
+        if not kept:
+            continue
+        item = dict(worker)
+        item["jobs"] = kept
+        item["unmatched"] = []
+        try:
+            grand += float(item.get("total") or 0)
+        except (TypeError, ValueError):
+            pass
+        workers.append(item)
+    out = dict(calculation)
+    out["workers"] = workers
+    out["unmatched_count"] = 0
+    out["grand_total"] = round(grand, 2)
+    return out, skipped
 
 
 def save_report(
@@ -380,6 +423,35 @@ def save_report(
         source_hash = str(source_hash)
 
     calc = calculation if isinstance(calculation, dict) else None
+    skipped_unpriced = 0
+    if calc is not None:
+        calc, skipped_unpriced = _calculation_without_unpriced(calc)
+
+    worker_rows, job_rows, workers_names, jobs_summary = _flatten_for_save(report, calc)
+    if not workers_names:
+        workers_names = _names_from_report(report)
+    report_to_store = report
+    if calc is not None:
+        report_to_store = dict(report)
+        report_to_store["workers"] = [
+            {
+                "raw_worker_name": wr["worker_name"],
+                "members": [p.strip() for p in str(wr["members"] or "").split(",") if p.strip()],
+                "performed_jobs": [
+                    {
+                        "raw_task_name": jr["task_name"],
+                        "job_description": jr["job_description"] or jr["task_name"],
+                        "service_type": jr["service_type"] or "Общее",
+                        "volume": jr["volume"] if jr["volume"] is not None else 0,
+                        "unit": jr["unit"] or "",
+                    }
+                    for jr in job_rows
+                    if jr["worker_no"] == wr["worker_no"]
+                ],
+            }
+            for wr in worker_rows
+        ]
+
     grand_total = None
     unmatched_count = 0
     if calc is not None:
@@ -387,12 +459,11 @@ def save_report(
             grand_total = float(calc.get("grand_total") or 0)
         except (TypeError, ValueError):
             grand_total = 0.0
-        try:
-            unmatched_count = int(calc.get("unmatched_count") or 0)
-        except (TypeError, ValueError):
-            unmatched_count = 0
-
-    worker_rows, job_rows, workers_names, jobs_summary = _flatten_for_save(report, calc)
+        if worker_rows:
+            grand_total = round(
+                sum(float(w["total"] or 0) for w in worker_rows),
+                2,
+            )
     created_at = datetime.now().isoformat(timespec="seconds")
     model_name = get_active_model()
     workers_count = len(worker_rows)
@@ -421,7 +492,7 @@ def save_report(
                 jobs_summary,
                 source_text,
                 source_hash,
-                json.dumps(report, ensure_ascii=False),
+                json.dumps(report_to_store, ensure_ascii=False),
                 json.dumps(calc, ensure_ascii=False) if calc is not None else None,
                 grand_total,
                 unmatched_count,
@@ -504,9 +575,257 @@ def save_report(
         "message": (
             f"Отчёт сохранён в БД (id={report_id}, работ={jobs_count}"
             + (f", участок «{site_name}»" if site_name else "")
+            + (
+                f", без прайса не записано: {skipped_unpriced}"
+                if skipped_unpriced
+                else ""
+            )
             + ")"
         ),
+        "skipped_unpriced": skipped_unpriced,
     }
+
+
+def _rebuild_report_rollups(conn: sqlite3.Connection, report_id: int) -> None:
+    """Пересобрать сотрудников и итог отчёта по текущим строкам работ."""
+    jobs = conn.execute(
+        """
+        SELECT id, worker_name, task_name, volume, unit, amount
+        FROM report_jobs
+        WHERE report_id = ?
+        ORDER BY worker_no, job_no, id
+        """,
+        (report_id,),
+    ).fetchall()
+    conn.execute("UPDATE report_jobs SET worker_id = NULL WHERE report_id = ?", (report_id,))
+    conn.execute("DELETE FROM report_workers WHERE report_id = ?", (report_id,))
+    groups: list[tuple[str, list[sqlite3.Row]]] = []
+    index: dict[str, int] = {}
+    for job in jobs:
+        name = " ".join(str(job["worker_name"] or "").split()) or "Без имени"
+        if name not in index:
+            index[name] = len(groups)
+            groups.append((name, []))
+        groups[index[name]][1].append(job)
+
+    names: list[str] = []
+    summary: list[str] = []
+    grand = 0.0
+    for worker_no, (name, group) in enumerate(groups, start=1):
+        total = round(sum(float(job["amount"] or 0) for job in group), 2)
+        cur = conn.execute(
+            """
+            INSERT INTO report_workers (
+                report_id, worker_no, worker_name, members, headcount, total, per_person
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (report_id, worker_no, name, name, 1, total, total),
+        )
+        worker_id = int(cur.lastrowid)
+        for job_no, job in enumerate(group, start=1):
+            conn.execute(
+                """
+                UPDATE report_jobs
+                SET worker_id = ?, worker_no = ?, job_no = ?, worker_name = ?
+                WHERE id = ?
+                """,
+                (worker_id, worker_no, job_no, name, job["id"]),
+            )
+            volume = job["volume"]
+            vol_s = f"{float(volume):g}" if isinstance(volume, (int, float)) else "?"
+            summary.append(f"{name}: {job['task_name']} — {vol_s} {job['unit'] or ''}".strip())
+        names.append(name)
+        grand += total
+
+    if names:
+        conn.execute(
+            """
+            UPDATE reports
+            SET workers_names = ?, jobs_summary = ?, grand_total = ?,
+                workers_count = ?, jobs_count = ?
+            WHERE id = ?
+            """,
+            ("; ".join(names), " | ".join(summary), round(grand, 2), len(groups), len(jobs), report_id),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE reports
+            SET jobs_summary = '', grand_total = 0, workers_count = 0, jobs_count = 0
+            WHERE id = ?
+            """,
+            (report_id,),
+        )
+
+
+def update_report_header(
+    report_id: int,
+    *,
+    report_date: str | None = None,
+    site_id: int | None = None,
+    site_set: bool = False,
+) -> dict[str, Any]:
+    """Изменить дату и участок отчёта. Строки работ остаются в этой папке."""
+    init_db()
+    conn = connect()
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        row = conn.execute("SELECT id, workers_names FROM reports WHERE id = ?", (report_id,)).fetchone()
+        if not row:
+            raise ValueError(f"Отчёт id={report_id} не найден")
+        sets: list[str] = []
+        params: list[Any] = []
+        if report_date is not None:
+            cleaned = _iso_date(report_date, "report_date")
+            if not cleaned:
+                raise ValueError("Укажите дату отчёта")
+            sets.append("report_date = ?")
+            params.append(cleaned)
+        if site_set:
+            site_name = _site_name(conn, site_id)
+            sets.append("site_id = ?")
+            params.append(None if site_id is None else int(site_id))
+        else:
+            site_name = None
+        if not sets:
+            raise ValueError("Нечего изменять")
+        params.append(int(report_id))
+        conn.execute(f"UPDATE reports SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+        saved = conn.execute(
+            """
+            SELECT r.id, r.report_date, r.workers_names, r.site_id, s.name AS site_name, r.grand_total
+            FROM reports r
+            LEFT JOIN sites s ON s.id = r.site_id
+            WHERE r.id = ?
+            """,
+            (report_id,),
+        ).fetchone()
+        return {
+            "ok": True,
+            "id": int(saved["id"]),
+            "report_date": saved["report_date"],
+            "site_id": saved["site_id"],
+            "site_name": saved["site_name"],
+            "title": _report_folder_title(int(saved["id"]), saved["report_date"], saved["workers_names"]),
+            "grand_total": saved["grand_total"],
+            "message": "Отчёт обновлён",
+        }
+    finally:
+        conn.close()
+
+
+def update_report_job(
+    job_id: int,
+    *,
+    worker_name: str,
+    task_name: str,
+    volume: float,
+    unit: str,
+    unit_price: float,
+) -> dict[str, Any]:
+    """Изменить строку работы. Сумма = объём × тариф, итог папки пересчитывается."""
+    name = " ".join(str(worker_name or "").split())
+    task = " ".join(str(task_name or "").split())
+    if not name:
+        raise ValueError("Укажите ФИО")
+    if len(name) > 200:
+        raise ValueError("ФИО не длиннее 200 символов")
+    if not task:
+        raise ValueError("Укажите работу")
+    if len(task) > 400:
+        raise ValueError("Название работы не длиннее 400 символов")
+    try:
+        vol = float(volume)
+        price = float(unit_price)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Объём и тариф должны быть числами") from exc
+    if vol < 0 or price < 0:
+        raise ValueError("Объём и тариф не могут быть отрицательными")
+    unit_s = " ".join(str(unit or "").split()) or "шт"
+    if len(unit_s) > 20:
+        raise ValueError("Единица не длиннее 20 символов")
+    amount = round(vol * price, 2)
+
+    init_db()
+    conn = connect()
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        job = conn.execute(
+            "SELECT id, report_id FROM report_jobs WHERE id = ?",
+            (int(job_id),),
+        ).fetchone()
+        if not job:
+            raise ValueError(f"Строка id={job_id} не найдена")
+        report_id = int(job["report_id"])
+        conn.execute(
+            """
+            UPDATE report_jobs
+            SET worker_name = ?, task_name = ?, job_description = ?,
+                matched_name = ?, volume = ?, unit = ?, unit_price = ?, amount = ?,
+                matched = 1
+            WHERE id = ?
+            """,
+            (name, task, task, task, vol, unit_s, price, amount, int(job_id)),
+        )
+        _rebuild_report_rollups(conn, report_id)
+        conn.commit()
+        return {
+            "ok": True,
+            "id": int(job_id),
+            "report_id": report_id,
+            "worker_name": name,
+            "task_name": task,
+            "volume": vol,
+            "unit": unit_s,
+            "unit_price": price,
+            "amount": amount,
+            "message": "Строка обновлена",
+        }
+    finally:
+        conn.close()
+
+
+def delete_report(report_id: int) -> dict[str, Any]:
+    """Удалить отчёт вместе со всеми его строками."""
+    init_db()
+    conn = connect()
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        row = conn.execute("SELECT id FROM reports WHERE id = ?", (int(report_id),)).fetchone()
+        if not row:
+            raise ValueError(f"Отчёт id={report_id} не найден")
+        conn.execute("DELETE FROM reports WHERE id = ?", (int(report_id),))
+        conn.commit()
+        return {"ok": True, "id": int(report_id), "message": "Отчёт удалён"}
+    finally:
+        conn.close()
+
+
+def delete_report_job(job_id: int) -> dict[str, Any]:
+    """Удалить одну строку. Папка отчёта остаётся."""
+    init_db()
+    conn = connect()
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        job = conn.execute(
+            "SELECT id, report_id FROM report_jobs WHERE id = ?",
+            (int(job_id),),
+        ).fetchone()
+        if not job:
+            raise ValueError(f"Строка id={job_id} не найдена")
+        report_id = int(job["report_id"])
+        conn.execute("DELETE FROM report_jobs WHERE id = ?", (int(job_id),))
+        _rebuild_report_rollups(conn, report_id)
+        conn.commit()
+        return {
+            "ok": True,
+            "id": int(job_id),
+            "report_id": report_id,
+            "message": "Строка удалена",
+        }
+    finally:
+        conn.close()
 
 
 def list_reports(limit: int = 50) -> list[dict[str, Any]]:
@@ -578,6 +897,29 @@ def get_report_details(report_id: int) -> dict[str, Any] | None:
         conn.close()
 
 
+def _names_from_report(report: dict[str, Any]) -> str:
+    names: list[str] = []
+    for worker in report.get("workers") or []:
+        if not isinstance(worker, dict):
+            continue
+        name = _worker_display_name(worker)
+        if name and name not in names:
+            names.append(name)
+    return "; ".join(names)
+
+
+def _report_folder_title(report_id: int, report_date: str | None, workers_names: str | None) -> str:
+    date_s = ""
+    raw = str(report_date or "")[:10]
+    parts = raw.split("-")
+    if len(parts) == 3 and all(parts):
+        date_s = f"{parts[2]}.{parts[1]}.{parts[0]}"
+    who = " ".join(str(workers_names or "").split())
+    if date_s and who:
+        return f"{date_s} — {who}"
+    return date_s or who or f"Отчёт {report_id}"
+
+
 def _iso_date(value: str | None, field: str) -> str | None:
     if value is None:
         return None
@@ -602,7 +944,7 @@ def query_db_rows(
     limit: int = 1000,
 ) -> dict[str, Any]:
     """
-    Flat job rows for the database browser.
+    Reports as folders, job lines nested inside each report.
     Filters: site (or unassigned), report date range, worker name substring.
     """
     if unassigned and site_id is not None:
@@ -637,66 +979,109 @@ def query_db_rows(
     if d_to:
         where.append("r.report_date <= ?")
         params.append(d_to)
-    if fio_raw:
-        pattern = _like_contains(_fold(fio_raw))
-        where.append("fold(j.worker_name) LIKE ? ESCAPE '\\'")
-        params.append(pattern)
 
     cap = max(1, min(int(limit), 2000))
     sql_where = " AND ".join(where)
+    fio_pattern = _like_contains(_fold(fio_raw)) if fio_raw else None
     init_db()
     conn = connect()
     try:
-        rows = conn.execute(
+        total_reports = conn.execute(
+            f"SELECT COUNT(*) FROM reports r WHERE {sql_where}",
+            params,
+        ).fetchone()[0]
+        heads = conn.execute(
             f"""
             SELECT
-                j.id AS job_id,
                 r.id AS report_id,
                 r.report_date,
                 r.created_at,
+                r.workers_names,
                 r.site_id,
-                s.name AS site_name,
-                j.worker_name,
-                j.task_name,
-                j.job_description,
-                j.service_type,
-                j.volume,
-                j.unit,
-                j.matched,
-                j.matched_name,
-                j.unit_price,
-                j.amount
-            FROM report_jobs j
-            JOIN reports r ON r.id = j.report_id
+                s.name AS site_name
+            FROM reports r
             LEFT JOIN sites s ON s.id = r.site_id
             WHERE {sql_where}
-            ORDER BY r.report_date DESC, r.id DESC, j.worker_no, j.job_no
+            ORDER BY r.report_date DESC, r.id DESC
             LIMIT ?
             """,
             (*params, cap),
         ).fetchall()
-        summary = conn.execute(
-            f"""
-            SELECT
-                COUNT(DISTINCT r.id) AS reports,
-                COUNT(j.id) AS jobs,
-                COUNT(DISTINCT j.worker_name) AS workers,
-                COALESCE(SUM(j.amount), 0) AS amount
-            FROM report_jobs j
-            JOIN reports r ON r.id = j.report_id
-            LEFT JOIN sites s ON s.id = r.site_id
-            WHERE {sql_where}
-            """,
-            params,
-        ).fetchone()
+        ids = [int(h["report_id"]) for h in heads]
+        jobs_by_report: dict[int, list[dict[str, Any]]] = {i: [] for i in ids}
+        if ids:
+            marks = ",".join("?" for _ in ids)
+            job_where = f"j.report_id IN ({marks})"
+            job_params: list[Any] = list(ids)
+            if fio_pattern:
+                job_where += " AND fold(j.worker_name) LIKE ? ESCAPE '\\'"
+                job_params.append(fio_pattern)
+            job_rows = conn.execute(
+                f"""
+                SELECT
+                    j.id AS job_id,
+                    j.report_id,
+                    j.worker_name,
+                    j.task_name,
+                    j.job_description,
+                    j.service_type,
+                    j.volume,
+                    j.unit,
+                    j.matched,
+                    j.matched_name,
+                    j.unit_price,
+                    j.amount
+                FROM report_jobs j
+                WHERE {job_where}
+                ORDER BY j.report_id, j.worker_no, j.job_no
+                """,
+                job_params,
+            ).fetchall()
+            for job in job_rows:
+                jobs_by_report.setdefault(int(job["report_id"]), []).append(dict(job))
+
+        reports: list[dict[str, Any]] = []
+        flat: list[dict[str, Any]] = []
+        for head in heads:
+            rid = int(head["report_id"])
+            jobs = jobs_by_report.get(rid, [])
+            title_names = head["workers_names"] or ""
+            if fio_pattern and not jobs and fio_raw.casefold() not in _fold(title_names):
+                continue
+            amount = round(sum(float(j["amount"] or 0) for j in jobs), 2)
+            folder = {
+                "id": rid,
+                "title": _report_folder_title(rid, head["report_date"], title_names),
+                "report_date": head["report_date"],
+                "created_at": head["created_at"],
+                "site_id": head["site_id"],
+                "site_name": head["site_name"],
+                "workers_names": title_names,
+                "jobs_count": len(jobs),
+                "amount": amount,
+                "jobs": jobs,
+            }
+            reports.append(folder)
+            for job in jobs:
+                flat.append({
+                    **job,
+                    "report_id": rid,
+                    "report_date": head["report_date"],
+                    "created_at": head["created_at"],
+                    "site_id": head["site_id"],
+                    "site_name": head["site_name"],
+                })
+
+        worker_names = {j["worker_name"] for j in flat if j.get("worker_name")}
         return {
-            "rows": [dict(r) for r in rows],
+            "reports": reports,
+            "rows": flat,
             "summary": {
-                "reports": int(summary["reports"] or 0),
-                "jobs": int(summary["jobs"] or 0),
-                "workers": int(summary["workers"] or 0),
-                "amount": float(summary["amount"] or 0),
-                "truncated": int(summary["jobs"] or 0) > len(rows),
+                "reports": len(reports),
+                "jobs": len(flat),
+                "workers": len(worker_names),
+                "amount": round(sum(float(j["amount"] or 0) for j in flat), 2),
+                "truncated": int(total_reports or 0) > len(heads),
             },
             "filters": {
                 "site_id": None if unassigned or site_id is None else int(site_id),

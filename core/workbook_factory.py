@@ -631,6 +631,40 @@ def activate_workbook_name(name: str) -> dict[str, Any]:
     return set_active_workbook(path, year_month_from_path(path))
 
 
+def delete_month_workbook(name: str) -> dict[str, Any]:
+    """Delete one month workbook. If it was active, switch to another book."""
+    path = resolve_workbook_name(name)
+    meta = get_active_meta()
+    was_active = bool(meta and Path(meta["path"]).resolve() == path.resolve())
+    log_path = written_log_for(path)
+    try:
+        path.unlink()
+    except PermissionError as exc:
+        raise ValueError("Файл открыт в другой программе. Закройте Excel и повторите.") from exc
+    if log_path.is_file():
+        try:
+            log_path.unlink()
+        except OSError:
+            pass
+    active = None if was_active else meta
+    if was_active and config.ACTIVE_WORKBOOK_META.exists():
+        config.ACTIVE_WORKBOOK_META.unlink()
+        remaining = list_month_workbooks()
+        if remaining:
+            active = set_active_workbook(
+                Path(remaining[0]["path"]),
+                remaining[0].get("year_month") or None,
+            )
+    label = workbook_label(year_month_from_path(path) or "", path, title_from_workbook_name(path.name))
+    return {
+        "ok": True,
+        "name": path.name,
+        "was_active": was_active,
+        "active": active,
+        "message": f"Таблица «{label}» удалена",
+    }
+
+
 def ensure_month_workbook(year: int, month: int, activate: bool = True) -> tuple[Path, bool]:
     """
     Return the monthly workbook path, creating an empty month if none exists.

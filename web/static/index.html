@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261108fio2" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261118book" />
 </head>
 <body>
   <header class="topbar">
@@ -131,21 +131,21 @@
           </div>
           <p class="hint" id="previewEditHint">Правьте ячейки прямо в таблице, затем «Применить правки» — JSON обновится и отчёт пересчитается.</p>
           <div class="preview-foot">
-            <div class="preview-total" id="previewTotal"></div>
             <div class="btn-row">
+              <button type="button" class="btn primary" id="btnSaveDb">Сохранить в БД</button>
               <button type="button" class="btn outline" id="btnApplyPreview" disabled>Применить правки</button>
               <button type="button" class="btn primary" id="btnExcel" disabled>Формировать отчёт</button>
               <button type="button" class="btn outline" id="btnCancelPreview">Отмена</button>
             </div>
+            <div class="preview-total" id="previewTotal"></div>
+            <p class="hint" id="dbSaveStatus"></p>
           </div>
           <details class="json-details">
             <summary>JSON от нейросети (можно править)</summary>
             <textarea id="jsonEditor" rows="10" spellcheck="false"></textarea>
             <div class="btn-row">
               <button type="button" class="btn outline" id="btnCalc">Пересчитать по прайсу</button>
-              <button type="button" class="btn primary" id="btnSaveDb">Сохранить в БД</button>
             </div>
-            <p class="hint" id="dbSaveStatus"></p>
           </details>
         </aside>
       </div>
@@ -271,6 +271,7 @@
             <button type="button" class="btn primary" id="btnActivateMonth">Сделать активной</button>
             <button type="button" class="btn outline" id="btnEditTable">Изменить / дозаполнить</button>
             <button type="button" class="btn outline" id="btnDownload">Скачать таблицу</button>
+            <button type="button" class="btn danger" id="btnDeleteWorkbook">Удалить таблицу</button>
             <button type="button" class="btn outline" id="btnRefreshWorkbooks">Обновить список</button>
           </div>
           <div class="field-row wrap" style="margin-top:12px">
@@ -407,18 +408,17 @@
             <table class="data-table" id="dbTable">
               <thead>
                 <tr>
-                  <th>Дата</th>
-                  <th>Участок</th>
                   <th>ФИО</th>
                   <th>Работа</th>
                   <th style="width:5rem">Объём</th>
                   <th style="width:4rem">Ед.</th>
                   <th style="width:5.5rem">Тариф</th>
                   <th style="width:5.5rem">Сумма</th>
+                  <th style="width:4.5rem"></th>
                 </tr>
               </thead>
               <tbody id="dbBody">
-                <tr class="empty-row"><td colspan="8">Загрузка…</td></tr>
+                <tr class="empty-row"><td colspan="7">Загрузка…</td></tr>
               </tbody>
             </table>
           </div>
@@ -484,7 +484,7 @@
             <p>Этапы сверху экрана (1→4) показывают, на каком шаге вы сейчас: загрузка → распознавание → расчёт → формирование.</p>
             <p>
               Excel и база — разные шаги. «Формировать отчёт» пишет в книгу месяца.
-              «Сохранить в БД» (в блоке JSON под предпросмотром) кладёт тот же расчёт в локальную базу,
+              «Сохранить в БД» (слева под таблицей предпросмотра) кладёт тот же расчёт в локальную базу,
               с участком из поля рядом с датой. Смотреть и фильтровать эти записи — вкладка <strong>«База»</strong>.
             </p>
           </section>
@@ -572,6 +572,7 @@
 
             <h3>Кнопки под предпросмотром</h3>
             <ul>
+              <li><strong>Сохранить в БД</strong> — слева под таблицей. Архив разбора и расчёта в SQLite (<code>data/reports.db</code>). Берётся участок из поля «Участок (для базы)» рядом с датой. Работы, которых нет в прайсе, в базу не пишутся. Excel эта кнопка не заменяет и дубликаты не проверяет: каждое нажатие — новая запись.</li>
               <li><strong>Применить правки</strong> — таблица → JSON + пересчёт.</li>
               <li><strong>Формировать отчёт</strong> — запись в Excel (месячная книга / дневной лист).</li>
               <li><strong>Отмена</strong> — сброс текущего предпросмотра в этой сессии (правки и JSON очищаются).</li>
@@ -583,13 +584,7 @@
               (тонкая правка структуры, просмотр сырых полей). Обычные исправления делайте в таблице.
             </p>
             <ul>
-              <li><strong>Пересчитать по прайсу</strong> — пересчёт текущего JSON без вызова ИИ.</li>
-              <li>
-                <strong>Сохранить в БД</strong> — архив разбора и расчёта в SQLite (<code>data/reports.db</code>).
-                Берётся участок из поля «Участок (для базы)» рядом с датой. Excel эта кнопка не заменяет
-                и дубликаты не проверяет: каждое нажатие — новая запись. Просмотр — вкладка «База»
-                (см. <a href="#help-db">«9. База отчётов»</a>).
-              </li>
+              <li><strong>Пересчитать по прайсу</strong> — пересчёт текущего JSON без вызова ИИ. Просмотр сохранённых записей — вкладка «База» (см. <a href="#help-db">«9. База отчётов»</a>).</li>
             </ul>
             <p>Расчёт в интерфейсе идёт по JSON-прайсу (<code>data/price_list.json</code>). В Excel тарифы при записи берутся из того же расчёта; лист «Данные» книги лучше держать согласованным с прайсом.</p>
           </section>
@@ -698,8 +693,8 @@
               <li><strong>Создать новую таблицу</strong> — см. раздел <a href="#help-new-month">«6. Создание нового месяца»</a>: месяц + название → файл <code>&lt;название&gt;_ГГГГ-ММ.xlsx</code>.</li>
               <li>
                 <strong>Заполнить или изменить таблицу</strong> — выбрать книгу в списке (<code>ГГГГ-ММ</code> или <code>ГГГГ-ММ — название</code>):
-                сделать активной, <strong>скачать целиком</strong>, <strong>скачать за период</strong> (даты «с»…«по» → только листы дней, без «Данные»/«Расчет»/«Шаблон»)
-                или перейти к дозаписи в «Отчёте». Подробнее — <a href="#help-download">§4, скачивание</a>.
+                сделать активной, <strong>скачать целиком</strong>, <strong>скачать за период</strong> (даты «с»…«по» → только листы дней, без «Данные»/«Расчет»/«Шаблон»),
+                <strong>удалить</strong> выбранную таблицу или перейти к дозаписи в «Отчёте». Подробнее — <a href="#help-download">§4, скачивание</a>.
               </li>
               <li>Тот же выбор таблицы доступен на вкладке «Отчёт» перед датой. Запись идёт в книгу месяца <em>даты отчёта</em> (или в уже выбранную активную с тем же месяцем).</li>
               <li><strong>Модель ИИ</strong> — выбор модели Ollama (список + ручной ввод); сохраняется и сразу используется при разборе.</li>
@@ -718,7 +713,9 @@
             <p>
               Вкладка <strong>«База»</strong> показывает отчёты, сохранённые кнопкой «Сохранить в БД».
               Это локальный архив в <code>data/reports.db</code>, не книга Excel.
-              Каждая строка таблицы — одна работа: дата, участок, ФИО, наименование, объём, единица, тариф и сумма.
+              Каждый отчёт — папка (дата и ФИО). Строки работ лежат внутри своей папки: ФИО, наименование, объём, единица, тариф и сумма.
+              Значок карандаша у папки правит дату и участок, у строки — ФИО, работу, объём, единицу и тариф. Сумма строки пересчитывается как объём × тариф.
+              Значок корзины удаляет папку целиком или одну строку. Перед удалением программа спрашивает подтверждение.
             </p>
 
             <h3>Создать участок</h3>
@@ -738,7 +735,7 @@
             <ol class="help-steps">
               <li>На вкладке «Отчёт» разберите текст и проверьте предпросмотр.</li>
               <li>Рядом с датой выберите участок. Если список пуст — сначала создайте участок на вкладке «База».</li>
-              <li>Откройте блок «JSON от нейросети» и нажмите <strong>«Сохранить в БД»</strong>.</li>
+              <li>Под таблицей предпросмотра слева нажмите <strong>«Сохранить в БД»</strong>.</li>
               <li>Под кнопкой появится номер записи, участок, ФИО и сумма. На вкладке «База» строка видна после «Обновить» или при следующем открытии раздела.</li>
             </ol>
             <p class="hint">
@@ -845,6 +842,16 @@
     </section>
   </div>
 
-  <script src="/static/app.js?v=20261108dl"></script>
+  <div id="dbConfirm" class="db-confirm" hidden>
+    <div class="db-confirm-card" role="dialog" aria-modal="true" aria-labelledby="dbConfirmText">
+      <p id="dbConfirmText"></p>
+      <div class="btn-row">
+        <button type="button" class="btn danger" id="dbConfirmYes">Удалить</button>
+        <button type="button" class="btn outline" id="dbConfirmNo">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=20261118book"></script>
 </body>
 </html>

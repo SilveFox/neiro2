@@ -15,6 +15,7 @@ from core.workbook_factory import (
     WorkbookExistsError,
     activate_workbook_name,
     create_month_workbook,
+    delete_month_workbook,
     list_month_workbooks,
     sanitize_workbook,
     sanitize_workbook_title,
@@ -415,6 +416,31 @@ class DownloadWorkbookTests(unittest.TestCase):
                 self.assertEqual(active.status_code, 200)
                 self.assertIn(august.name, unquote(active.headers["content-disposition"]))
                 self.assertNotIn(july.name, active.headers["content-disposition"])
+            finally:
+                config.WORKBOOKS_DIR = old_dir
+                config.ACTIVE_WORKBOOK_META = old_meta
+
+
+    def test_delete_workbook_switches_active(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            old_dir = config.WORKBOOKS_DIR
+            old_meta = config.ACTIVE_WORKBOOK_META
+            config.WORKBOOKS_DIR = tmp_path / "workbooks"
+            config.WORKBOOKS_DIR.mkdir()
+            config.ACTIVE_WORKBOOK_META = tmp_path / "active_workbook.json"
+            try:
+                keep = create_month_workbook(2026, 7, activate=True, title="Оставить")
+                drop = create_month_workbook(2026, 8, activate=True, title="Удалить")
+                result = delete_month_workbook(drop.name)
+                self.assertFalse(drop.exists())
+                self.assertFalse(drop.with_suffix(".written.json").exists())
+                self.assertTrue(result["was_active"])
+                self.assertEqual(result["active"]["name"], keep.name)
+                self.assertTrue(keep.exists())
+                kept = delete_month_workbook(keep.name)
+                self.assertIsNone(kept["active"])
+                self.assertFalse(list_month_workbooks())
             finally:
                 config.WORKBOOKS_DIR = old_dir
                 config.ACTIVE_WORKBOOK_META = old_meta

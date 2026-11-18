@@ -17,7 +17,17 @@ from core import config
 from core.excel_writer import append_calc_to_workbook, ensure_working_workbook, get_written_log
 from core.model_settings import get_active_model, model_settings_payload, set_active_model
 from core.parser import ParseError, parse_report_text, parse_report_text_rules, validate_report
-from core.report_db import create_site, list_reports, list_sites, query_db_rows, save_report
+from core.report_db import (
+    create_site,
+    list_reports,
+    list_sites,
+    query_db_rows,
+    save_report,
+    delete_report,
+    delete_report_job,
+    update_report_header,
+    update_report_job,
+)
 from core.pricing import (
     PriceList,
     calculate_report,
@@ -32,6 +42,7 @@ from core.workbook_factory import (
     activate_workbook_name,
     activate_year_month,
     create_month_workbook,
+    delete_month_workbook,
     export_workbook_period,
     get_active_meta,
     list_month_workbooks,
@@ -121,6 +132,20 @@ class SaveReportDbRequest(BaseModel):
 
 class SiteCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
+
+
+class ReportUpdateRequest(BaseModel):
+    report_date: str | None = None
+    site_id: int | None = None
+    site_set: bool = False
+
+
+class JobUpdateRequest(BaseModel):
+    worker_name: str = Field(..., min_length=1, max_length=200)
+    task_name: str = Field(..., min_length=1, max_length=400)
+    volume: float = Field(..., ge=0)
+    unit: str = Field(default="шт", max_length=20)
+    unit_price: float = Field(..., ge=0)
 
 
 def _extract_upload_text(filename: str, data: bytes) -> str:
@@ -241,6 +266,23 @@ def api_workbook_new(body: NewMonthRequest):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         log.exception("workbook/new failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
+
+
+class DeleteWorkbookRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=180)
+
+
+@app.post("/api/workbook/delete")
+def api_workbook_delete(body: DeleteWorkbookRequest):
+    try:
+        return delete_month_workbook(body.name)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("workbook/delete failed")
         raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 
@@ -432,6 +474,66 @@ def api_db_rows(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         log.exception("db/rows failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
+
+
+@app.patch("/api/reports/{report_id}")
+def api_reports_update(report_id: int, body: ReportUpdateRequest):
+    try:
+        return update_report_header(
+            report_id,
+            report_date=body.report_date,
+            site_id=body.site_id,
+            site_set=body.site_set,
+        )
+    except ValueError as exc:
+        status = 404 if "не найден" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("reports/update failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
+
+
+@app.delete("/api/reports/{report_id}")
+def api_reports_delete(report_id: int):
+    try:
+        return delete_report(report_id)
+    except ValueError as exc:
+        status = 404 if "не найден" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("reports/delete failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
+
+
+@app.delete("/api/db/jobs/{job_id}")
+def api_db_job_delete(job_id: int):
+    try:
+        return delete_report_job(job_id)
+    except ValueError as exc:
+        status = 404 if "не найдена" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("db/job delete failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
+
+
+@app.patch("/api/db/jobs/{job_id}")
+def api_db_job_update(job_id: int, body: JobUpdateRequest):
+    try:
+        return update_report_job(
+            job_id,
+            worker_name=body.worker_name,
+            task_name=body.task_name,
+            volume=body.volume,
+            unit=body.unit,
+            unit_price=body.unit_price,
+        )
+    except ValueError as exc:
+        status = 404 if "не найдена" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("db/job update failed")
         raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
 
 

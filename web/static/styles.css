@@ -550,9 +550,27 @@ textarea {
   margin-top: 12px;
   display: flex;
   flex-wrap: wrap;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   gap: 10px;
+}
+
+.preview-foot .btn-row {
+  margin: 0;
+  justify-content: flex-start;
+}
+
+.preview-foot .preview-total {
+  margin-left: auto;
+}
+
+.preview-foot #dbSaveStatus {
+  flex: 1 0 100%;
+  margin: 0;
+}
+
+.preview-foot #dbSaveStatus:empty {
+  display: none;
 }
 
 .preview-total {
@@ -825,6 +843,175 @@ textarea {
 
 .db-main .table-wrap.full {
   max-height: calc(100vh - 340px);
+}
+
+.db-folder td {
+  background: #eef3fb;
+  padding: 0;
+  border-top: 2px solid #d5e0f2;
+}
+
+.db-folder-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+}
+
+.db-folder-mark {
+  width: 14px;
+  height: 11px;
+  border: 1.5px solid #3d5a80;
+  border-radius: 2px 3px 2px 2px;
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.db-folder-mark::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: -1.5px;
+  width: 6px;
+  height: 4px;
+  border: 1.5px solid #3d5a80;
+  border-bottom: 0;
+  border-radius: 2px 2px 0 0;
+  background: #eef3fb;
+}
+
+.db-folder-title {
+  font-weight: 700;
+}
+
+.db-folder-meta {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.db-folder-line td:first-child {
+  padding-left: 28px;
+}
+
+.db-folder.is-collapsed .db-folder-mark {
+  opacity: 0.45;
+}
+
+.db-folder-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.db-folder-bar .db-folder-btn {
+  flex: 1;
+  min-width: 0;
+}
+
+.db-folder-edit,
+.db-row-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding-right: 8px;
+}
+
+.db-pencil {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #1c1c1c;
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.db-pencil svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.db-pencil:hover {
+  background: #eef2f8;
+  color: var(--blue);
+}
+
+.db-trash:hover {
+  background: #fff1f1;
+  color: var(--danger);
+}
+
+.db-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(20, 28, 45, 0.45);
+}
+
+.db-confirm[hidden] {
+  display: none;
+}
+
+.db-confirm-card {
+  width: min(420px, 100%);
+  padding: 22px 22px 18px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 16px 40px rgba(20, 28, 45, 0.22);
+}
+
+.db-confirm-card p {
+  margin: 0 0 16px;
+  font-size: 1.05rem;
+  font-weight: 650;
+}
+
+.db-row-actions .btn,
+.db-folder-edit .btn,
+.db-inline-actions .btn {
+  padding: 6px 10px;
+  min-height: 0;
+}
+
+.db-inline-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font: inherit;
+  background: #fff;
+}
+
+.db-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .settings-actions {

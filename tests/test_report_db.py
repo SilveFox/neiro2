@@ -8,7 +8,17 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from core import config
-from core.report_db import create_site, init_db, list_sites, query_db_rows, save_report
+from core.report_db import (
+    create_site,
+    init_db,
+    list_sites,
+    query_db_rows,
+    save_report,
+    delete_report,
+    delete_report_job,
+    update_report_header,
+    update_report_job,
+)
 
 
 REPORT = {
@@ -132,6 +142,161 @@ class ReportDbBrowserTests(unittest.TestCase):
         self.assertEqual(saved["site_name"], "Гарантия")
         rows = query_db_rows(site_id=site["id"])
         self.assertEqual(rows["summary"]["jobs"], 2)
+
+    def test_skips_jobs_missing_from_price(self):
+        saved = save_report(
+            REPORT,
+            calculation={
+                "grand_total": 100,
+                "unmatched_count": 1,
+                "workers": [
+                    {
+                        "raw_worker_name": "Карандак В.Е.",
+                        "members": ["Карандак В.Е."],
+                        "headcount": 1,
+                        "total": 100,
+                        "per_person": 100,
+                        "jobs": [
+                            {
+                                "raw_task_name": "Выкладка запаса",
+                                "job_description": "Выкладка запаса",
+                                "matched": True,
+                                "matched_name": "Выкладка запаса кабеля",
+                                "volume": 2,
+                                "unit": "шт",
+                                "unit_price": 50,
+                                "amount": 100,
+                            },
+                            {
+                                "raw_task_name": "Несуществующая работа",
+                                "job_description": "Несуществующая работа",
+                                "matched": False,
+                                "matched_name": None,
+                                "volume": 4,
+                                "unit": "шт",
+                                "unit_price": None,
+                                "amount": None,
+                            },
+                        ],
+                    },
+                    {
+                        "raw_worker_name": "Без работ в прайсе",
+                        "members": ["Без работ в прайсе"],
+                        "headcount": 1,
+                        "total": 0,
+                        "per_person": 0,
+                        "jobs": [
+                            {
+                                "raw_task_name": "Тоже нет в прайсе",
+                                "matched": False,
+                                "volume": 1,
+                                "unit": "шт",
+                            }
+                        ],
+                    },
+                ],
+            },
+        )
+        self.assertEqual(saved["jobs_count"], 1)
+        self.assertEqual(saved["workers_count"], 1)
+        self.assertEqual(saved["skipped_unpriced"], 2)
+        self.assertEqual(saved["grand_total"], 100)
+        self.assertNotIn("Несуществующая", saved["jobs_summary"])
+        self.assertNotIn("Без работ", saved["workers_names"])
+        rows = query_db_rows()
+        self.assertEqual(len(rows["rows"]), 1)
+        self.assertEqual(rows["rows"][0]["task_name"], "Выкладка запаса кабеля")
+        self.assertEqual(rows["rows"][0]["matched"], 1)
+        self.assertEqual(rows["rows"][0]["report_id"], saved["id"])
+        self.assertEqual(rows["reports"][0]["jobs"][0]["report_id"], saved["id"])
+
+        empty = save_report(
+            REPORT,
+            calculation={
+                "workers": [
+                    {
+                        "raw_worker_name": "Карандак В.Е.",
+                        "members": ["Карандак В.Е."],
+                        "jobs": [
+                            {"raw_task_name": "Нет в прайсе", "matched": False, "volume": 1, "unit": "шт"}
+                        ],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(empty["jobs_count"], 0)
+        folders = query_db_rows()["reports"]
+        folder = next(item for item in folders if item["id"] == empty["id"])
+        self.assertEqual(folder["jobs"], [])
+        self.assertIn("15.06.2026", folder["title"])
+        self.assertEqual(folder["id"], empty["id"])
+
+    def test_edit_report_and_job(self):
+        site = create_site("Север")
+        other = create_site("Юг")
+        saved = save_report(
+            REPORT,
+            site_id=site["id"],
+            calculation={
+                "workers": [
+                    {
+                        "raw_worker_name": "Карандак В.Е.",
+                        "members": ["Карандак В.Е."],
+                        "total": 100,
+                        "per_person": 100,
+                        "jobs": [
+                            {
+                                "raw_task_name": "Выкладка",
+                                "matched": True,
+                                "matched_name": "Выкладка запаса кабеля",
+                                "volume": 2,
+                                "unit": "шт",
+                                "unit_price": 50,
+                                "amount": 100,
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+        job_id = query_db_rows()["rows"][0]["job_id"]
+        updated = update_report_job(
+            job_id,
+            worker_name="Моисеев А.Д.",
+            task_name="Прокладка по стояку",
+            volume=3,
+            unit="м",
+            unit_price=17,
+        )
+        self.assertEqual(updated["amount"], 51)
+        self.assertEqual(updated["report_id"], saved["id"])
+        folder = query_db_rows()["reports"][0]
+        self.assertEqual(folder["jobs"][0]["worker_name"], "Моисеев А.Д.")
+        self.assertEqual(folder["amount"], 51)
+        self.assertIn("Моисеев", folder["title"])
+
+        moved = update_report_header(
+            saved["id"],
+            report_date="2026-11-02",
+            site_id=other["id"],
+            site_set=True,
+        )
+        self.assertEqual(moved["report_date"], "2026-11-02")
+        self.assertEqual(moved["site_name"], "Юг")
+        self.assertIn("02.11.2026", moved["title"])
+        cleared = update_report_header(saved["id"], site_id=None, site_set=True)
+        self.assertIsNone(cleared["site_name"])
+
+        removed_job = delete_report_job(job_id)
+        self.assertEqual(removed_job["report_id"], saved["id"])
+        left = query_db_rows()["reports"]
+        folder_left = next(item for item in left if item["id"] == saved["id"])
+        self.assertEqual(folder_left["jobs"], [])
+
+        delete_report(saved["id"])
+        self.assertFalse(any(item["id"] == saved["id"] for item in query_db_rows()["reports"]))
+        with self.assertRaises(ValueError):
+            delete_report(saved["id"])
 
 
 if __name__ == "__main__":

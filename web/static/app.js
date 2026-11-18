@@ -142,6 +142,7 @@
   const btnDownload = $("btnDownload");
   const btnDownloadPeriod = $("btnDownloadPeriod");
   const btnRefreshWorkbooks = $("btnRefreshWorkbooks");
+  const btnDeleteWorkbook = $("btnDeleteWorkbook");
   let suppressMonthChange = false;
   let lastActiveMeta = null;
 
@@ -853,7 +854,10 @@
       log(`${msg}. Итого: ${data.grand_total ?? "—"}`);
       if (dbSaveStatus) {
         const siteLabel = data.site_name ? ` · ${data.site_name}` : "";
-        dbSaveStatus.textContent = `Сохранено · id ${data.id}${siteLabel} · ${data.workers_names || data.report_date || ""} · работ ${data.jobs_count ?? "—"} · ${data.grand_total ?? 0} ₽`;
+        const skipped = data.skipped_unpriced
+          ? ` · без прайса не записано ${data.skipped_unpriced}`
+          : "";
+        dbSaveStatus.textContent = `Сохранено · id ${data.id}${siteLabel} · ${data.workers_names || data.report_date || ""} · работ ${data.jobs_count ?? "—"}${skipped} · ${data.grand_total ?? 0} ₽`;
       }
     } catch (e) {
       log(`Ошибка БД: ${e.message}`);
@@ -1246,6 +1250,37 @@
       if (!quiet) log(e.message);
       if (workbookEditStatus) workbookEditStatus.textContent = e.message;
       return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSelectedWorkbook() {
+    const key = selectedWorkbookKey();
+    const item = key ? workbookItemsByName[key] : null;
+    const name = (item && item.name) || (key && key.toLowerCase().endsWith(".xlsx") ? key : "");
+    if (!name) {
+      if (workbookEditStatus) workbookEditStatus.textContent = "Выберите таблицу в списке";
+      return;
+    }
+    const label = item ? workbookDisplayName(item) : name;
+    if (!(await askDbConfirm("Вы точно хотите удалить таблицу?"))) return;
+    if (workbookEditStatus) workbookEditStatus.textContent = `Удаление ${label}…`;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/workbook/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Не удалось удалить таблицу");
+      const msg = data.message || `Таблица «${label}» удалена`;
+      log(msg);
+      if (workbookEditStatus) workbookEditStatus.textContent = msg;
+      await refreshWorkbooks();
+    } catch (e) {
+      if (workbookEditStatus) workbookEditStatus.textContent = e.message;
     } finally {
       setBusy(false);
     }
@@ -1737,6 +1772,8 @@
   const newSiteName = $("newSiteName");
   let dbSitesPayload = { sites: [], unassigned_count: 0, reports_total: 0 };
   let dbFilter = { site: "", from: "", to: "", fio: "" };
+  let dbReports = [];
+  let dbEditing = null;
 
   function formatDateRu(iso) {
     if (!iso) return "—";
@@ -1750,6 +1787,131 @@
     const v = Number(n);
     if (Number.isNaN(v)) return "—";
     return v.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+  }
+
+  function jobsCountLabel(n) {
+    const abs = Math.abs(Number(n) || 0);
+    const n10 = abs % 10;
+    const n100 = abs % 100;
+    if (n10 === 1 && n100 !== 11) return "строка";
+    if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return "строки";
+    return "строк";
+  }
+
+  function dbIconButton(action, idAttr, id, label, kind) {
+    const pencil = `<path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/>`;
+    const trash = `<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M7 7l1 13h8l1-13"/><path d="M10 11v6"/><path d="M14 11v6"/>`;
+    return `<button type="button" class="db-pencil${kind === "trash" ? " db-trash" : ""}" data-db-action="${action}" ${idAttr}="${id}" aria-label="${label}" title="${label}">
+      <svg viewBox="0 0 24 24" aria-hidden="true">${kind === "trash" ? trash : pencil}</svg>
+    </button>`;
+  }
+
+  function dbSiteOptions(selected) {
+    const sites = dbSitesPayload.sites || [];
+    const current = selected == null ? "" : String(selected);
+    return `<option value="">Без участка</option>${sites
+      .map((s) => `<option value="${s.id}"${String(s.id) === current ? " selected" : ""}>${escapeHtml(s.name)}</option>`)
+      .join("")}`;
+  }
+
+  function renderDbFolders(reports) {
+    dbBody.innerHTML = "";
+    if (!reports.length) {
+      dbBody.innerHTML = `<tr class="empty-row"><td colspan="7">Нет записей по этому фильтру. Сохраните отчёт кнопкой «Сохранить в БД».</td></tr>`;
+      return;
+    }
+    for (const folder of reports) {
+      const jobs = folder.jobs || [];
+      const count = jobs.length;
+      const head = document.createElement("tr");
+      head.className = "db-folder";
+      head.dataset.report = String(folder.id);
+      const editingFolder = dbEditing && dbEditing.type === "report" && dbEditing.id === folder.id;
+      if (editingFolder) {
+        const dateValue = String(folder.report_date || "").slice(0, 10);
+        head.innerHTML = `<td colspan="7">
+          <div class="db-folder-bar">
+            <input class="db-inline-input" id="dbEditDate" type="date" value="${escapeHtml(dateValue)}" aria-label="Дата отчёта" />
+            <select class="db-inline-input" id="dbEditSite" aria-label="Участок">${dbSiteOptions(folder.site_id)}</select>
+            <div class="db-inline-actions">
+              <button type="button" class="btn primary" data-db-action="save-report" data-report="${folder.id}">Сохранить</button>
+              <button type="button" class="btn outline" data-db-action="cancel-db">Отмена</button>
+            </div>
+          </div>
+        </td>`;
+      } else {
+        head.innerHTML = `<td colspan="7">
+          <div class="db-folder-bar">
+            <button type="button" class="db-folder-btn" aria-expanded="true">
+              <span class="db-folder-mark" aria-hidden="true"></span>
+              <span class="db-folder-title">${escapeHtml(folder.title || "Отчёт")}</span>
+              <span class="db-folder-meta">${escapeHtml(folder.site_name || "Без участка")} · ${count} ${jobsCountLabel(count)} · ${formatMoney(folder.amount)} ₽</span>
+            </button>
+            <div class="db-folder-edit">
+              ${dbIconButton("edit-report", "data-report", folder.id, "Изменить", "pencil")}
+              ${dbIconButton("delete-report", "data-report", folder.id, "Удалить отчёт", "trash")}
+            </div>
+          </div>
+        </td>`;
+      }
+      dbBody.appendChild(head);
+      if (!jobs.length) {
+        const empty = document.createElement("tr");
+        empty.className = "db-folder-line";
+        empty.dataset.report = String(folder.id);
+        empty.innerHTML = `<td colspan="7" class="muted">В этом отчёте нет работ из прайса</td>`;
+        dbBody.appendChild(empty);
+        continue;
+      }
+      for (const row of jobs) {
+        const tr = document.createElement("tr");
+        tr.className = "db-folder-line";
+        tr.dataset.report = String(folder.id);
+        const editingJob = dbEditing && dbEditing.type === "job" && dbEditing.id === row.job_id;
+        if (editingJob) {
+          const work = row.matched_name || row.task_name || "";
+          tr.innerHTML = `
+            <td><input class="db-inline-input" id="dbEditFio" value="${escapeHtml(row.worker_name || "")}" aria-label="ФИО" /></td>
+            <td><input class="db-inline-input" id="dbEditTask" value="${escapeHtml(work)}" aria-label="Работа" /></td>
+            <td><input class="db-inline-input" id="dbEditVolume" type="number" min="0" step="any" value="${row.volume ?? ""}" aria-label="Объём" /></td>
+            <td><input class="db-inline-input" id="dbEditUnit" value="${escapeHtml(row.unit || "")}" aria-label="Единица" /></td>
+            <td><input class="db-inline-input" id="dbEditPrice" type="number" min="0" step="any" value="${row.unit_price ?? ""}" aria-label="Тариф" /></td>
+            <td class="num" id="dbEditAmount">${row.amount == null ? "—" : formatMoney(row.amount)}</td>
+            <td>
+              <div class="db-inline-actions">
+                <button type="button" class="btn primary" data-db-action="save-job" data-job="${row.job_id}">Сохранить</button>
+                <button type="button" class="btn outline" data-db-action="cancel-db">Отмена</button>
+              </div>
+            </td>`;
+        } else {
+          if (!row.matched) tr.classList.add("unmatched");
+          const work = row.matched_name || row.task_name || "—";
+          tr.innerHTML = `
+            <td>${escapeHtml(row.worker_name || "—")}</td>
+            <td>${escapeHtml(work)}</td>
+            <td class="num">${formatQty(row.volume)}</td>
+            <td>${escapeHtml(row.unit || "—")}</td>
+            <td class="num">${row.unit_price == null ? "—" : formatMoney(row.unit_price)}</td>
+            <td class="num">${row.amount == null ? "—" : formatMoney(row.amount)}</td>
+            <td><div class="db-folder-edit">${dbIconButton("edit-job", "data-job", row.job_id, "Изменить", "pencil")}${dbIconButton("delete-job", "data-job", row.job_id, "Удалить строку", "trash")}</div></td>`;
+        }
+        dbBody.appendChild(tr);
+      }
+    }
+  }
+
+  function previewDbAmount() {
+    const volume = document.getElementById("dbEditVolume");
+    const price = document.getElementById("dbEditPrice");
+    const out = document.getElementById("dbEditAmount");
+    if (!volume || !price || !out) return;
+    const vol = Number(String(volume.value).replace(",", "."));
+    const cost = Number(String(price.value).replace(",", "."));
+    if (!Number.isFinite(vol) || !Number.isFinite(cost)) {
+      out.textContent = "—";
+      return;
+    }
+    out.textContent = formatMoney(Math.round(vol * cost * 100) / 100);
   }
 
   function renderSiteControls() {
@@ -1825,9 +1987,9 @@
     if (dbFio) dbFio.value = dbFilter.fio;
   }
 
-  async function loadDbRows() {
+  async function loadDbRows(options = {}) {
     if (!dbBody) return;
-    if (dbStatus) dbStatus.textContent = "";
+    if (dbStatus && !options.keepStatus) dbStatus.textContent = "";
     const params = new URLSearchParams();
     if (dbFilter.site === "__none__") params.set("unassigned", "true");
     else if (dbFilter.site) params.set("site_id", dbFilter.site);
@@ -1838,7 +2000,8 @@
       const res = await fetch(`/api/db/rows?${params.toString()}`);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Не удалось прочитать базу");
-      const rows = data.rows || [];
+      dbReports = data.reports || [];
+      const reports = dbReports;
       const summary = data.summary || {};
       if (dbSummary) {
         dbSummary.innerHTML = `
@@ -1847,33 +2010,13 @@
           <span class="db-stat">ФИО: ${summary.workers ?? 0}</span>
           <span class="db-stat">Сумма: ${formatMoney(summary.amount)} ₽</span>`;
       }
-      dbBody.innerHTML = "";
-      if (!rows.length) {
-        dbBody.innerHTML = `<tr class="empty-row"><td colspan="8">Нет записей по этому фильтру. Сохраните отчёт кнопкой «Сохранить в БД».</td></tr>`;
-      } else {
-        for (const row of rows) {
-          const tr = document.createElement("tr");
-          if (!row.matched) tr.classList.add("unmatched");
-          const work = row.matched_name || row.task_name || "—";
-          tr.innerHTML = `
-            <td>${escapeHtml(formatDateRu(row.report_date))}</td>
-            <td>${escapeHtml(row.site_name || "—")}</td>
-            <td>${escapeHtml(row.worker_name || "—")}</td>
-            <td>${escapeHtml(work)}</td>
-            <td class="num">${formatQty(row.volume)}</td>
-            <td>${escapeHtml(row.unit || "—")}</td>
-            <td class="num">${row.unit_price == null ? "—" : formatMoney(row.unit_price)}</td>
-            <td class="num">${row.amount == null ? "—" : formatMoney(row.amount)}</td>`;
-          tr.title = `Отчёт #${row.report_id}`;
-          dbBody.appendChild(tr);
-        }
-      }
+      renderDbFolders(reports);
       if (dbStatus && summary.truncated) {
-        dbStatus.textContent = `Показаны первые ${rows.length} строк. Сузьте фильтр, чтобы увидеть остальные.`;
+        dbStatus.textContent = `Показаны первые ${reports.length} отчётов. Сузьте фильтр, чтобы увидеть остальные.`;
       }
     } catch (e) {
       if (dbStatus) dbStatus.textContent = e.message;
-      dbBody.innerHTML = `<tr class="empty-row"><td colspan="8">${escapeHtml(e.message)}</td></tr>`;
+      dbBody.innerHTML = `<tr class="empty-row"><td colspan="7">${escapeHtml(e.message)}</td></tr>`;
     }
   }
 
@@ -1937,6 +2080,181 @@
   }
   const btnDbRefresh = $("btnDbRefresh");
   if (btnDbRefresh) btnDbRefresh.addEventListener("click", loadDatabaseView);
+  async function saveDbReport(reportId) {
+    const dateEl = document.getElementById("dbEditDate");
+    const siteEl = document.getElementById("dbEditSite");
+    if (!dateEl || !siteEl) return;
+    if (dbStatus) dbStatus.textContent = "Сохранение…";
+    try {
+      const res = await fetch(`/api/reports/${reportId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          report_date: dateEl.value,
+          site_id: siteEl.value ? Number(siteEl.value) : null,
+          site_set: true,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Не удалось сохранить отчёт");
+      dbEditing = null;
+      await loadSites();
+      await loadDbRows({ keepStatus: true });
+      if (dbStatus && !dbStatus.textContent) dbStatus.textContent = data.message || "Отчёт обновлён";
+    } catch (e) {
+      if (dbStatus) dbStatus.textContent = e.message;
+    }
+  }
+
+  async function saveDbJob(jobId) {
+    const fio = document.getElementById("dbEditFio");
+    const task = document.getElementById("dbEditTask");
+    const volume = document.getElementById("dbEditVolume");
+    const unit = document.getElementById("dbEditUnit");
+    const price = document.getElementById("dbEditPrice");
+    if (!fio || !task || !volume || !unit || !price) return;
+    if (dbStatus) dbStatus.textContent = "Сохранение…";
+    try {
+      const res = await fetch(`/api/db/jobs/${jobId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          worker_name: fio.value.trim(),
+          task_name: task.value.trim(),
+          volume: Number(String(volume.value).replace(",", ".")),
+          unit: unit.value.trim() || "шт",
+          unit_price: Number(String(price.value).replace(",", ".")),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Не удалось сохранить строку");
+      dbEditing = null;
+      await loadDbRows({ keepStatus: true });
+      if (dbStatus && !dbStatus.textContent) dbStatus.textContent = data.message || "Строка обновлена";
+    } catch (e) {
+      if (dbStatus) dbStatus.textContent = e.message;
+    }
+  }
+
+  function askDbConfirm(message) {
+    const box = document.getElementById("dbConfirm");
+    const text = document.getElementById("dbConfirmText");
+    const yes = document.getElementById("dbConfirmYes");
+    const no = document.getElementById("dbConfirmNo");
+    if (!box || !text || !yes || !no) return Promise.resolve(false);
+    text.textContent = message;
+    box.hidden = false;
+    return new Promise((resolve) => {
+      const finish = (ok) => {
+        box.hidden = true;
+        yes.removeEventListener("click", onYes);
+        no.removeEventListener("click", onNo);
+        box.removeEventListener("click", onBackdrop);
+        document.removeEventListener("keydown", onKey);
+        resolve(ok);
+      };
+      const onYes = () => finish(true);
+      const onNo = () => finish(false);
+      const onBackdrop = (event) => {
+        if (event.target === box) finish(false);
+      };
+      const onKey = (event) => {
+        if (event.key === "Escape") finish(false);
+      };
+      yes.addEventListener("click", onYes);
+      no.addEventListener("click", onNo);
+      box.addEventListener("click", onBackdrop);
+      document.addEventListener("keydown", onKey);
+      no.focus();
+    });
+  }
+
+  async function deleteDbReport(reportId) {
+    if (!(await askDbConfirm("Вы точно хотите удалить папку?"))) return;
+    if (dbStatus) dbStatus.textContent = "Удаление…";
+    try {
+      const res = await fetch(`/api/reports/${reportId}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Не удалось удалить отчёт");
+      if (dbEditing && dbEditing.type === "report" && String(dbEditing.id) === String(reportId)) dbEditing = null;
+      await loadSites();
+      await loadDbRows({ keepStatus: true });
+      if (dbStatus && !dbStatus.textContent) dbStatus.textContent = data.message || "Отчёт удалён";
+    } catch (e) {
+      if (dbStatus) dbStatus.textContent = e.message;
+    }
+  }
+
+  async function deleteDbJob(jobId) {
+    if (!(await askDbConfirm("Вы точно хотите удалить строку?"))) return;
+    if (dbStatus) dbStatus.textContent = "Удаление…";
+    try {
+      const res = await fetch(`/api/db/jobs/${jobId}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Не удалось удалить строку");
+      if (dbEditing && dbEditing.type === "job" && String(dbEditing.id) === String(jobId)) dbEditing = null;
+      await loadDbRows({ keepStatus: true });
+      if (dbStatus && !dbStatus.textContent) dbStatus.textContent = data.message || "Строка удалена";
+    } catch (e) {
+      if (dbStatus) dbStatus.textContent = e.message;
+    }
+  }
+
+  if (dbBody) {
+    dbBody.addEventListener("input", (event) => {
+      if (event.target && (event.target.id === "dbEditVolume" || event.target.id === "dbEditPrice")) {
+        previewDbAmount();
+      }
+    });
+    dbBody.addEventListener("click", async (event) => {
+      const actionBtn = event.target.closest("[data-db-action]");
+      if (actionBtn) {
+        const action = actionBtn.dataset.dbAction;
+        if (action === "cancel-db") {
+          dbEditing = null;
+          renderDbFolders(dbReports);
+          return;
+        }
+        if (action === "edit-report") {
+          dbEditing = { type: "report", id: Number(actionBtn.dataset.report) };
+          renderDbFolders(dbReports);
+          return;
+        }
+        if (action === "edit-job") {
+          dbEditing = { type: "job", id: Number(actionBtn.dataset.job) };
+          renderDbFolders(dbReports);
+          return;
+        }
+        if (action === "save-report") {
+          await saveDbReport(actionBtn.dataset.report);
+          return;
+        }
+        if (action === "save-job") {
+          await saveDbJob(actionBtn.dataset.job);
+          return;
+        }
+        if (action === "delete-report") {
+          await deleteDbReport(actionBtn.dataset.report);
+          return;
+        }
+        if (action === "delete-job") {
+          await deleteDbJob(actionBtn.dataset.job);
+          return;
+        }
+      }
+      const btn = event.target.closest(".db-folder-btn");
+      if (!btn) return;
+      const head = btn.closest("tr");
+      const reportId = head && head.dataset.report;
+      if (!reportId) return;
+      const open = btn.getAttribute("aria-expanded") !== "true";
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      head.classList.toggle("is-collapsed", !open);
+      dbBody.querySelectorAll(`tr.db-folder-line[data-report="${reportId}"]`).forEach((line) => {
+        line.hidden = !open;
+      });
+    });
+  }
   if (dbSiteSelect) {
     dbSiteSelect.addEventListener("change", () => {
       dbFilter.site = dbSiteSelect.value;
@@ -1963,6 +2281,7 @@
     btnActivateMonth.addEventListener("click", () => activateMonth({ syncDate: true }));
   }
   if (btnEditTable) btnEditTable.addEventListener("click", editExistingTable);
+  if (btnDeleteWorkbook) btnDeleteWorkbook.addEventListener("click", deleteSelectedWorkbook);
   if (btnDownload) btnDownload.addEventListener("click", downloadActiveExcel);
   if (btnDownloadPeriod) btnDownloadPeriod.addEventListener("click", downloadPeriodExcel);
   function onMonthSelectChange(select) {
