@@ -934,6 +934,87 @@ def _iso_date(value: str | None, field: str) -> str | None:
     return raw
 
 
+def load_reports_for_excel(report_ids: list[int]) -> list[dict[str, Any]]:
+    """Reports with worker blocks and jobs, in the requested order, for Excel export."""
+    if not isinstance(report_ids, list) or not report_ids:
+        raise ValueError("Выберите хотя бы один отчёт")
+    ids: list[int] = []
+    seen: set[int] = set()
+    for raw in report_ids:
+        try:
+            rid = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Некорректный номер отчёта") from exc
+        if rid <= 0:
+            raise ValueError("Некорректный номер отчёта")
+        if rid in seen:
+            continue
+        seen.add(rid)
+        ids.append(rid)
+    if len(ids) > 200:
+        raise ValueError("За один раз можно скачать не больше 200 отчётов")
+
+    init_db()
+    conn = connect()
+    try:
+        marks = ",".join("?" for _ in ids)
+        heads = conn.execute(
+            f"SELECT id, report_date FROM reports WHERE id IN ({marks})",
+            ids,
+        ).fetchall()
+        found = {int(row["id"]): row for row in heads}
+        missing = [str(rid) for rid in ids if rid not in found]
+        if missing:
+            raise ValueError("Отчёты не найдены: " + ", ".join(missing))
+        undated = [str(rid) for rid in ids if not str(found[rid]["report_date"] or "").strip()]
+        if undated:
+            raise ValueError("У отчётов нет даты: " + ", ".join(undated))
+
+        worker_rows = conn.execute(
+            f"""
+            SELECT report_id, worker_no, worker_name, members, headcount, total, per_person
+            FROM report_workers
+            WHERE report_id IN ({marks})
+            ORDER BY report_id, worker_no
+            """,
+            ids,
+        ).fetchall()
+        job_rows = conn.execute(
+            f"""
+            SELECT
+                report_id, worker_no, job_no, task_name, job_description, service_type,
+                volume, unit, matched, matched_name, unit_price, amount
+            FROM report_jobs
+            WHERE report_id IN ({marks})
+            ORDER BY report_id, worker_no, job_no, id
+            """,
+            ids,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    jobs_by: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for job in job_rows:
+        jobs_by.setdefault((int(job["report_id"]), int(job["worker_no"])), []).append(dict(job))
+
+    workers_by: dict[int, list[dict[str, Any]]] = {}
+    for worker in worker_rows:
+        item = dict(worker)
+        item["jobs"] = jobs_by.get((int(worker["report_id"]), int(worker["worker_no"])), [])
+        workers_by.setdefault(int(worker["report_id"]), []).append(item)
+
+    reports: list[dict[str, Any]] = []
+    for rid in ids:
+        reports.append(
+            {
+                "id": rid,
+                "report_date": str(found[rid]["report_date"])[:10],
+                "workers": workers_by.get(rid, []),
+            }
+        )
+    return reports
+
+
 def query_db_rows(
     *,
     site_id: int | None = None,

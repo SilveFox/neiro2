@@ -21,6 +21,7 @@ from core.report_db import (
     create_site,
     list_reports,
     list_sites,
+    load_reports_for_excel,
     query_db_rows,
     save_report,
     delete_report,
@@ -43,6 +44,7 @@ from core.workbook_factory import (
     activate_year_month,
     create_month_workbook,
     delete_month_workbook,
+    export_db_reports_excel,
     export_workbook_period,
     get_active_meta,
     list_month_workbooks,
@@ -138,6 +140,10 @@ class ReportUpdateRequest(BaseModel):
     report_date: str | None = None
     site_id: int | None = None
     site_set: bool = False
+
+
+class DbExportRequest(BaseModel):
+    report_ids: list[int] = Field(..., min_length=1, max_length=200)
 
 
 class JobUpdateRequest(BaseModel):
@@ -640,6 +646,41 @@ def download_excel_period(
 
     background_tasks.add_task(_cleanup, export_path)
     return _excel_file_response(export_path)
+
+
+@app.post("/api/db/export-excel")
+def api_db_export_excel(body: DbExportRequest, background_tasks: BackgroundTasks):
+    """Download selected database reports as day sheets, same layout as a period file."""
+    try:
+        reports = load_reports_for_excel(body.report_ids)
+        export_path = export_db_reports_excel(reports)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("db excel export failed")
+        raise HTTPException(status_code=500, detail=_client_error(exc)) from exc
+
+    dates = sorted(str(item["report_date"])[:10] for item in reports)
+    if dates[0] == dates[-1]:
+        download_name = f"otchety_{dates[0]}.xlsx"
+    else:
+        download_name = f"otchety_{dates[0]}_{dates[-1]}.xlsx"
+
+    def _cleanup(p: Path) -> None:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    background_tasks.add_task(_cleanup, export_path)
+    return FileResponse(
+        export_path,
+        filename=download_name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/price")

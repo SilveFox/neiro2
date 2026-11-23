@@ -1761,6 +1761,12 @@
   /* -------- database browser -------- */
   const saveSiteSelect = $("saveSiteSelect");
   const dbBody = $("dbBody");
+  const dbSheet = $("dbSheet");
+  const dbTabs = $("dbTabs");
+  const dbFoldersPanel = $("dbFoldersPanel");
+  const dbFolderList = $("dbFolderList");
+  const dbTablePanel = $("dbTablePanel");
+  const dbSheetCaption = $("dbSheetCaption");
   const dbSummary = $("dbSummary");
   const dbStatus = $("dbStatus");
   const dbSiteStatus = $("dbSiteStatus");
@@ -1774,6 +1780,9 @@
   let dbFilter = { site: "", from: "", to: "", fio: "" };
   let dbReports = [];
   let dbEditing = null;
+  /** Open folder tabs: { id, report }. The folder list itself is not stored here. */
+  let dbOpenTabs = [];
+  let dbActiveTab = "folders";
 
   function formatDateRu(iso) {
     if (!iso) return "—";
@@ -1814,22 +1823,81 @@
       .join("")}`;
   }
 
-  function renderDbFolders(reports) {
-    dbBody.innerHTML = "";
+  function syncOpenTabs(reports) {
+    for (const tab of dbOpenTabs) {
+      const fresh = reports.find((item) => item.id === tab.id);
+      if (fresh) tab.report = fresh;
+    }
+  }
+
+  function closeDbTab(reportId) {
+    const id = Number(reportId);
+    dbOpenTabs = dbOpenTabs.filter((tab) => tab.id !== id);
+    if (dbActiveTab === id) dbActiveTab = "folders";
+    if (dbEditing && dbEditing.type === "job") {
+      const stillVisible = dbOpenTabs.some((tab) =>
+        (tab.report.jobs || []).some((row) => row.job_id === dbEditing.id)
+      );
+      if (!stillVisible) dbEditing = null;
+    }
+    if (dbEditing && dbEditing.type === "report" && dbEditing.id === id) dbEditing = null;
+  }
+
+  function openDbFolder(reportId) {
+    const report = dbReports.find((item) => item.id === Number(reportId));
+    if (!report) return;
+    const existing = dbOpenTabs.find((tab) => tab.id === report.id);
+    if (existing) existing.report = report;
+    else dbOpenTabs.push({ id: report.id, report });
+    dbActiveTab = report.id;
+    renderDbBrowser();
+  }
+
+  function renderDbTabs() {
+    if (!dbTabs) return;
+    if (!dbOpenTabs.length) {
+      dbTabs.hidden = true;
+      dbTabs.innerHTML = "";
+      return;
+    }
+    dbTabs.hidden = false;
+    dbTabs.innerHTML = "";
+    const foldersBtn = document.createElement("button");
+    foldersBtn.type = "button";
+    foldersBtn.className = `db-tab${dbActiveTab === "folders" ? " active" : ""}`;
+    foldersBtn.dataset.dbTab = "folders";
+    foldersBtn.setAttribute("role", "tab");
+    foldersBtn.textContent = "Папки";
+    dbTabs.appendChild(foldersBtn);
+    for (const tab of dbOpenTabs) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `db-tab${dbActiveTab === tab.id ? " active" : ""}`;
+      btn.dataset.dbTab = String(tab.id);
+      btn.setAttribute("role", "tab");
+      const title = tab.report.title || "Отчёт";
+      btn.innerHTML = `<span class="db-tab-title">${escapeHtml(title)}</span><span class="db-tab-close" data-db-close="${tab.id}" role="button" aria-label="Закрыть вкладку">×</span>`;
+      dbTabs.appendChild(btn);
+    }
+  }
+
+  function renderDbFolderList(reports) {
+    if (!dbFolderList) return;
+    dbFolderList.innerHTML = "";
     if (!reports.length) {
-      dbBody.innerHTML = `<tr class="empty-row"><td colspan="7">Нет записей по этому фильтру. Сохраните отчёт кнопкой «Сохранить в БД».</td></tr>`;
+      dbFolderList.innerHTML = `<p class="db-folder-empty">Нет записей по этому фильтру. Сохраните отчёт кнопкой «Сохранить в БД».</p>`;
       return;
     }
     for (const folder of reports) {
       const jobs = folder.jobs || [];
       const count = jobs.length;
-      const head = document.createElement("tr");
-      head.className = "db-folder";
-      head.dataset.report = String(folder.id);
+      const card = document.createElement("div");
+      card.className = "db-folder-card";
+      card.dataset.report = String(folder.id);
       const editingFolder = dbEditing && dbEditing.type === "report" && dbEditing.id === folder.id;
       if (editingFolder) {
         const dateValue = String(folder.report_date || "").slice(0, 10);
-        head.innerHTML = `<td colspan="7">
+        card.innerHTML = `
           <div class="db-folder-bar">
             <input class="db-inline-input" id="dbEditDate" type="date" value="${escapeHtml(dateValue)}" aria-label="Дата отчёта" />
             <select class="db-inline-input" id="dbEditSite" aria-label="Участок">${dbSiteOptions(folder.site_id)}</select>
@@ -1837,12 +1905,11 @@
               <button type="button" class="btn primary" data-db-action="save-report" data-report="${folder.id}">Сохранить</button>
               <button type="button" class="btn outline" data-db-action="cancel-db">Отмена</button>
             </div>
-          </div>
-        </td>`;
+          </div>`;
       } else {
-        head.innerHTML = `<td colspan="7">
+        card.innerHTML = `
           <div class="db-folder-bar">
-            <button type="button" class="db-folder-btn" aria-expanded="true">
+            <button type="button" class="db-folder-btn" data-report="${folder.id}">
               <span class="db-folder-mark" aria-hidden="true"></span>
               <span class="db-folder-title">${escapeHtml(folder.title || "Отчёт")}</span>
               <span class="db-folder-meta">${escapeHtml(folder.site_name || "Без участка")} · ${count} ${jobsCountLabel(count)} · ${formatMoney(folder.amount)} ₽</span>
@@ -1851,53 +1918,77 @@
               ${dbIconButton("edit-report", "data-report", folder.id, "Изменить", "pencil")}
               ${dbIconButton("delete-report", "data-report", folder.id, "Удалить отчёт", "trash")}
             </div>
-          </div>
-        </td>`;
+          </div>`;
       }
-      dbBody.appendChild(head);
-      if (!jobs.length) {
-        const empty = document.createElement("tr");
-        empty.className = "db-folder-line";
-        empty.dataset.report = String(folder.id);
-        empty.innerHTML = `<td colspan="7" class="muted">В этом отчёте нет работ из прайса</td>`;
-        dbBody.appendChild(empty);
-        continue;
-      }
-      for (const row of jobs) {
-        const tr = document.createElement("tr");
-        tr.className = "db-folder-line";
-        tr.dataset.report = String(folder.id);
-        const editingJob = dbEditing && dbEditing.type === "job" && dbEditing.id === row.job_id;
-        if (editingJob) {
-          const work = row.matched_name || row.task_name || "";
-          tr.innerHTML = `
-            <td><input class="db-inline-input" id="dbEditFio" value="${escapeHtml(row.worker_name || "")}" aria-label="ФИО" /></td>
-            <td><input class="db-inline-input" id="dbEditTask" value="${escapeHtml(work)}" aria-label="Работа" /></td>
-            <td><input class="db-inline-input" id="dbEditVolume" type="number" min="0" step="any" value="${row.volume ?? ""}" aria-label="Объём" /></td>
-            <td><input class="db-inline-input" id="dbEditUnit" value="${escapeHtml(row.unit || "")}" aria-label="Единица" /></td>
-            <td><input class="db-inline-input" id="dbEditPrice" type="number" min="0" step="any" value="${row.unit_price ?? ""}" aria-label="Тариф" /></td>
-            <td class="num" id="dbEditAmount">${row.amount == null ? "—" : formatMoney(row.amount)}</td>
-            <td>
-              <div class="db-inline-actions">
-                <button type="button" class="btn primary" data-db-action="save-job" data-job="${row.job_id}">Сохранить</button>
-                <button type="button" class="btn outline" data-db-action="cancel-db">Отмена</button>
-              </div>
-            </td>`;
-        } else {
-          if (!row.matched) tr.classList.add("unmatched");
-          const work = row.matched_name || row.task_name || "—";
-          tr.innerHTML = `
-            <td>${escapeHtml(row.worker_name || "—")}</td>
-            <td>${escapeHtml(work)}</td>
-            <td class="num">${formatQty(row.volume)}</td>
-            <td>${escapeHtml(row.unit || "—")}</td>
-            <td class="num">${row.unit_price == null ? "—" : formatMoney(row.unit_price)}</td>
-            <td class="num">${row.amount == null ? "—" : formatMoney(row.amount)}</td>
-            <td><div class="db-folder-edit">${dbIconButton("edit-job", "data-job", row.job_id, "Изменить", "pencil")}${dbIconButton("delete-job", "data-job", row.job_id, "Удалить строку", "trash")}</div></td>`;
-        }
-        dbBody.appendChild(tr);
-      }
+      dbFolderList.appendChild(card);
     }
+  }
+
+  function renderDbJobs(folder) {
+    if (!dbBody) return;
+    const jobs = (folder && folder.jobs) || [];
+    if (dbSheetCaption) {
+      const count = jobs.length;
+      dbSheetCaption.textContent = folder
+        ? `${folder.site_name || "Без участка"} · ${formatDateRu(folder.report_date)} · ${count} ${jobsCountLabel(count)} · ${formatMoney(folder.amount)} ₽`
+        : "";
+    }
+    dbBody.innerHTML = "";
+    if (!jobs.length) {
+      dbBody.innerHTML = `<tr class="empty-row"><td colspan="7">В этом отчёте нет работ из прайса</td></tr>`;
+      return;
+    }
+    for (const row of jobs) {
+      const tr = document.createElement("tr");
+      tr.dataset.report = String(folder.id);
+      const editingJob = dbEditing && dbEditing.type === "job" && dbEditing.id === row.job_id;
+      if (editingJob) {
+        const work = row.matched_name || row.task_name || "";
+        tr.innerHTML = `
+          <td><input class="db-inline-input" id="dbEditFio" value="${escapeHtml(row.worker_name || "")}" aria-label="ФИО" /></td>
+          <td><input class="db-inline-input" id="dbEditTask" value="${escapeHtml(work)}" aria-label="Работа" /></td>
+          <td><input class="db-inline-input" id="dbEditVolume" type="number" min="0" step="any" value="${row.volume ?? ""}" aria-label="Объём" /></td>
+          <td><input class="db-inline-input" id="dbEditUnit" value="${escapeHtml(row.unit || "")}" aria-label="Единица" /></td>
+          <td><input class="db-inline-input" id="dbEditPrice" type="number" min="0" step="any" value="${row.unit_price ?? ""}" aria-label="Тариф" /></td>
+          <td class="num" id="dbEditAmount">${row.amount == null ? "—" : formatMoney(row.amount)}</td>
+          <td>
+            <div class="db-inline-actions">
+              <button type="button" class="btn primary" data-db-action="save-job" data-job="${row.job_id}">Сохранить</button>
+              <button type="button" class="btn outline" data-db-action="cancel-db">Отмена</button>
+            </div>
+          </td>`;
+      } else {
+        if (!row.matched) tr.classList.add("unmatched");
+        const work = row.matched_name || row.task_name || "—";
+        tr.innerHTML = `
+          <td>${escapeHtml(row.worker_name || "—")}</td>
+          <td>${escapeHtml(work)}</td>
+          <td class="num">${formatQty(row.volume)}</td>
+          <td>${escapeHtml(row.unit || "—")}</td>
+          <td class="num">${row.unit_price == null ? "—" : formatMoney(row.unit_price)}</td>
+          <td class="num">${row.amount == null ? "—" : formatMoney(row.amount)}</td>
+          <td><div class="db-folder-edit">${dbIconButton("edit-job", "data-job", row.job_id, "Изменить", "pencil")}${dbIconButton("delete-job", "data-job", row.job_id, "Удалить строку", "trash")}</div></td>`;
+      }
+      dbBody.appendChild(tr);
+    }
+  }
+
+  function renderDbBrowser() {
+    renderDbFolderList(dbReports);
+    renderDbTabs();
+    const showTable = dbActiveTab !== "folders";
+    if (dbFoldersPanel) dbFoldersPanel.hidden = showTable;
+    if (dbTablePanel) dbTablePanel.hidden = !showTable;
+    if (!showTable) return;
+    const tab = dbOpenTabs.find((item) => item.id === dbActiveTab);
+    if (!tab) {
+      dbActiveTab = "folders";
+      if (dbFoldersPanel) dbFoldersPanel.hidden = false;
+      if (dbTablePanel) dbTablePanel.hidden = true;
+      renderDbTabs();
+      return;
+    }
+    renderDbJobs(tab.report);
   }
 
   function previewDbAmount() {
@@ -2001,6 +2092,7 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Не удалось прочитать базу");
       dbReports = data.reports || [];
+      syncOpenTabs(dbReports);
       const reports = dbReports;
       const summary = data.summary || {};
       if (dbSummary) {
@@ -2010,13 +2102,15 @@
           <span class="db-stat">ФИО: ${summary.workers ?? 0}</span>
           <span class="db-stat">Сумма: ${formatMoney(summary.amount)} ₽</span>`;
       }
-      renderDbFolders(reports);
+      renderDbBrowser();
       if (dbStatus && summary.truncated) {
         dbStatus.textContent = `Показаны первые ${reports.length} отчётов. Сузьте фильтр, чтобы увидеть остальные.`;
       }
     } catch (e) {
       if (dbStatus) dbStatus.textContent = e.message;
-      dbBody.innerHTML = `<tr class="empty-row"><td colspan="7">${escapeHtml(e.message)}</td></tr>`;
+      if (dbFolderList) {
+        dbFolderList.innerHTML = `<p class="db-folder-empty">${escapeHtml(e.message)}</p>`;
+      }
     }
   }
 
@@ -2080,6 +2174,114 @@
   }
   const btnDbRefresh = $("btnDbRefresh");
   if (btnDbRefresh) btnDbRefresh.addEventListener("click", loadDatabaseView);
+
+  const dbExport = $("dbExport");
+  const dbExportList = $("dbExportList");
+  const dbExportAll = $("dbExportAll");
+  const dbExportStatus = $("dbExportStatus");
+  const dbExportYes = $("dbExportYes");
+
+  function syncDbExportAll() {
+    if (!dbExportList || !dbExportAll) return;
+    const boxes = [...dbExportList.querySelectorAll("input[data-report]")];
+    const enabled = boxes.filter((box) => !box.disabled);
+    dbExportAll.checked = enabled.length > 0 && enabled.every((box) => box.checked);
+    dbExportAll.indeterminate = enabled.some((box) => box.checked) && !dbExportAll.checked;
+  }
+
+  function openDbExport() {
+    if (!dbExport || !dbExportList) return;
+    if (dbExportStatus) dbExportStatus.textContent = "";
+    dbExportList.innerHTML = "";
+    const reports = dbReports || [];
+    if (!reports.length) {
+      dbExportList.innerHTML = `<p class="db-folder-empty">Нет отчётов по текущему фильтру.</p>`;
+    }
+    for (const folder of reports) {
+      const label = document.createElement("label");
+      label.className = "db-export-item";
+      const dated = Boolean(folder.report_date);
+      const count = (folder.jobs || []).length;
+      label.innerHTML = `
+        <input type="checkbox" data-report="${folder.id}" ${dated ? "checked" : "disabled"} />
+        <span>
+          <strong>${escapeHtml(folder.title || "Отчёт")}</strong><br />
+          <span class="muted">${escapeHtml(folder.site_name || "Без участка")} · ${count} ${jobsCountLabel(count)} · ${formatMoney(folder.amount)} ₽</span>
+          ${dated ? "" : `<br /><span class="muted">Нет даты — в Excel не попадает</span>`}
+        </span>`;
+      dbExportList.appendChild(label);
+    }
+    syncDbExportAll();
+    dbExport.hidden = false;
+    if (dbExportYes) dbExportYes.focus();
+  }
+
+  function closeDbExport() {
+    if (dbExport) dbExport.hidden = true;
+  }
+
+  async function downloadSelectedReports() {
+    if (!dbExportList) return;
+    const ids = [...dbExportList.querySelectorAll("input[data-report]:checked")].map((box) =>
+      Number(box.dataset.report)
+    );
+    if (!ids.length) {
+      if (dbExportStatus) dbExportStatus.textContent = "Отметьте хотя бы один отчёт";
+      return;
+    }
+    if (dbExportStatus) dbExportStatus.textContent = "Формирование Excel…";
+    if (dbExportYes) dbExportYes.disabled = true;
+    try {
+      const res = await fetch("/api/db/export-excel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ report_ids: ids }),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || res.statusText);
+      }
+      const blob = await res.blob();
+      const filename = filenameFromDisposition(
+        res.headers.get("content-disposition"),
+        "otchety.xlsx"
+      );
+      await saveExcelBlob(blob, filename);
+      log(`Скачаны отчёты из базы: ${filename}`);
+      if (dbStatus) dbStatus.textContent = `Скачан файл ${filename}`;
+      closeDbExport();
+    } catch (e) {
+      if (dbExportStatus) dbExportStatus.textContent = e.message;
+    } finally {
+      if (dbExportYes) dbExportYes.disabled = false;
+    }
+  }
+
+  const btnDbDownload = $("btnDbDownload");
+  if (btnDbDownload) btnDbDownload.addEventListener("click", openDbExport);
+  if (dbExportAll) {
+    dbExportAll.addEventListener("change", () => {
+      if (!dbExportList) return;
+      dbExportList.querySelectorAll("input[data-report]").forEach((box) => {
+        if (!box.disabled) box.checked = dbExportAll.checked;
+      });
+      syncDbExportAll();
+    });
+  }
+  if (dbExportList) {
+    dbExportList.addEventListener("change", (event) => {
+      if (event.target && event.target.matches("input[data-report]")) syncDbExportAll();
+    });
+  }
+  if (dbExportYes) dbExportYes.addEventListener("click", downloadSelectedReports);
+  const dbExportNo = $("dbExportNo");
+  if (dbExportNo) dbExportNo.addEventListener("click", closeDbExport);
+  if (dbExport) {
+    dbExport.addEventListener("click", (event) => {
+      if (event.target === dbExport) closeDbExport();
+    });
+  }
   async function saveDbReport(reportId) {
     const dateEl = document.getElementById("dbEditDate");
     const siteEl = document.getElementById("dbEditSite");
@@ -2176,6 +2378,7 @@
       const res = await fetch(`/api/reports/${reportId}`, { method: "DELETE" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || "Не удалось удалить отчёт");
+      closeDbTab(reportId);
       if (dbEditing && dbEditing.type === "report" && String(dbEditing.id) === String(reportId)) dbEditing = null;
       await loadSites();
       await loadDbRows({ keepStatus: true });
@@ -2200,29 +2403,44 @@
     }
   }
 
-  if (dbBody) {
-    dbBody.addEventListener("input", (event) => {
+  if (dbSheet) {
+    dbSheet.addEventListener("input", (event) => {
       if (event.target && (event.target.id === "dbEditVolume" || event.target.id === "dbEditPrice")) {
         previewDbAmount();
       }
     });
-    dbBody.addEventListener("click", async (event) => {
+    dbSheet.addEventListener("click", async (event) => {
+      const closeBtn = event.target.closest("[data-db-close]");
+      if (closeBtn) {
+        event.stopPropagation();
+        closeDbTab(closeBtn.dataset.dbClose);
+        renderDbBrowser();
+        return;
+      }
+      const tabBtn = event.target.closest("[data-db-tab]");
+      if (tabBtn) {
+        const raw = tabBtn.dataset.dbTab;
+        dbActiveTab = raw === "folders" ? "folders" : Number(raw);
+        renderDbBrowser();
+        return;
+      }
       const actionBtn = event.target.closest("[data-db-action]");
       if (actionBtn) {
         const action = actionBtn.dataset.dbAction;
         if (action === "cancel-db") {
           dbEditing = null;
-          renderDbFolders(dbReports);
+          renderDbBrowser();
           return;
         }
         if (action === "edit-report") {
           dbEditing = { type: "report", id: Number(actionBtn.dataset.report) };
-          renderDbFolders(dbReports);
+          dbActiveTab = "folders";
+          renderDbBrowser();
           return;
         }
         if (action === "edit-job") {
           dbEditing = { type: "job", id: Number(actionBtn.dataset.job) };
-          renderDbFolders(dbReports);
+          renderDbBrowser();
           return;
         }
         if (action === "save-report") {
@@ -2243,16 +2461,8 @@
         }
       }
       const btn = event.target.closest(".db-folder-btn");
-      if (!btn) return;
-      const head = btn.closest("tr");
-      const reportId = head && head.dataset.report;
-      if (!reportId) return;
-      const open = btn.getAttribute("aria-expanded") !== "true";
-      btn.setAttribute("aria-expanded", open ? "true" : "false");
-      head.classList.toggle("is-collapsed", !open);
-      dbBody.querySelectorAll(`tr.db-folder-line[data-report="${reportId}"]`).forEach((line) => {
-        line.hidden = !open;
-      });
+      if (!btn || !btn.dataset.report) return;
+      openDbFolder(btn.dataset.report);
     });
   }
   if (dbSiteSelect) {

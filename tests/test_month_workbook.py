@@ -272,6 +272,133 @@ class MonthWorkbookTests(unittest.TestCase):
                 config.ACTIVE_WORKBOOK_META = old_meta
                 config.SOURCE_WORKBOOK = old_src
 
+    def test_export_db_reports_matches_period_sheets(self):
+        from core.report_db import load_reports_for_excel, save_report
+        from core.workbook_factory import export_db_reports_excel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            old_db = config.REPORTS_DB
+            old_src = config.SOURCE_WORKBOOK
+            old_staff = config.EMPLOYEES_CACHE
+            config.REPORTS_DB = tmp_path / "reports.db"
+            config.EMPLOYEES_CACHE = tmp_path / "employees.json"
+            config.EMPLOYEES_CACHE.write_text(
+                json.dumps(["Карандак В.Е.", "Лошкомойников С.И."]),
+                encoding="utf-8",
+            )
+            src = tmp_path / "template.xlsx"
+            wb = openpyxl.Workbook()
+            wb.active.title = "Данные"
+            wb.create_sheet("Расчет")
+            template = wb.create_sheet("Шаблон")
+            template.cell(5, 11).value = "Карандак В.Е."
+            template.cell(5, 12).value = '=SUMIF(C:C,K5,I:I)'
+            for day in range(1, 32):
+                wb.create_sheet(f"{day:02d}")
+            wb.save(src)
+            wb.close()
+            config.SOURCE_WORKBOOK = src
+            try:
+                calc = {
+                    "grand_total": 200,
+                    "workers": [
+                        {
+                            "raw_worker_name": "Карандак В.Е.",
+                            "members": ["Карандак В.Е."],
+                            "headcount": 1,
+                            "total": 200,
+                            "per_person": 200,
+                            "jobs": [
+                                {
+                                    "raw_task_name": "Выкладка запаса",
+                                    "job_description": "Выкладка запаса",
+                                    "matched_name": "Выкладка запаса",
+                                    "service_type": "Общее",
+                                    "volume": 2,
+                                    "unit": "шт",
+                                    "unit_price": 100,
+                                    "amount": 200,
+                                    "matched": True,
+                                }
+                            ],
+                        }
+                    ],
+                }
+                first = save_report(
+                    {
+                        "report_date": "2026-10-05",
+                        "workers": [
+                            {
+                                "raw_worker_name": "Карандак В.Е.",
+                                "performed_jobs": [
+                                    {"raw_task_name": "Выкладка запаса", "volume": 2, "unit": "шт"}
+                                ],
+                            }
+                        ],
+                    },
+                    calculation=calc,
+                )
+                second = save_report(
+                    {
+                        "report_date": "2026-10-07",
+                        "workers": [
+                            {
+                                "raw_worker_name": "Лошкомойников С.И.",
+                                "members": ["Лошкомойников С.И."],
+                                "performed_jobs": [
+                                    {"raw_task_name": "Обжим", "volume": 1, "unit": "шт"}
+                                ],
+                            }
+                        ],
+                    }
+                )
+                loaded = load_reports_for_excel([second["id"], first["id"]])
+                out = export_db_reports_excel(loaded, dest=tmp_path / "out.xlsx")
+                exported = openpyxl.load_workbook(out)
+                try:
+                    self.assertEqual(exported.sheetnames, ["05", "07"])
+                    self.assertNotIn("Данные", exported.sheetnames)
+                    self.assertNotIn("Расчет", exported.sheetnames)
+                    self.assertNotIn("Шаблон", exported.sheetnames)
+                    day = exported["05"]
+                    self.assertEqual(day.cell(1, 2).value, "05.10.2026")
+                    values = [
+                        day.cell(row, 4).value
+                        for row in range(1, 15)
+                        if day.cell(row, 4).value
+                    ]
+                    self.assertIn("Выкладка запаса", values)
+                    self.assertIn("Наименование работ", values)
+                finally:
+                    exported.close()
+
+                other_month = save_report(
+                    {
+                        "report_date": "2026-11-05",
+                        "workers": [
+                            {
+                                "raw_worker_name": "Карандак В.Е.",
+                                "members": ["Карандак В.Е."],
+                                "performed_jobs": [
+                                    {"raw_task_name": "Муфта", "volume": 1, "unit": "шт"}
+                                ],
+                            }
+                        ],
+                    }
+                )
+                mixed = load_reports_for_excel([first["id"], other_month["id"]])
+                mixed_out = export_db_reports_excel(mixed, dest=tmp_path / "mixed.xlsx")
+                mixed_book = openpyxl.load_workbook(mixed_out)
+                try:
+                    self.assertEqual(mixed_book.sheetnames, ["05.10", "05.11"])
+                finally:
+                    mixed_book.close()
+            finally:
+                config.REPORTS_DB = old_db
+                config.SOURCE_WORKBOOK = old_src
+                config.EMPLOYEES_CACHE = old_staff
+
     def test_write_uses_titled_book_not_bare_month(self):
         """Report for YYYY-MM must go into Title_YYYY-MM.xlsx, not create bare YYYY-MM.xlsx."""
         self.assertTrue(config.SOURCE_WORKBOOK.exists())

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=20261118book" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261123xlsx" />
 </head>
 <body>
   <header class="topbar">
@@ -357,9 +357,12 @@
       <div class="view-head">
         <div>
           <h1>База отчётов</h1>
-          <p class="lead">Сохранённые отчёты из локальной базы. Фильтр по участку, дате и ФИО. Новая строка появляется после «Сохранить в БД» на вкладке «Отчёт».</p>
+          <p class="lead">Сохранённые отчёты из локальной базы. При открытии видны только папки. Нажмите папку — её работы откроются таблицей во вспомогательной вкладке.</p>
         </div>
-        <button type="button" class="btn outline" id="btnDbRefresh">Обновить</button>
+        <div class="btn-row">
+          <button type="button" class="btn outline" id="btnDbDownload">Скачать</button>
+          <button type="button" class="btn outline" id="btnDbRefresh">Обновить</button>
+        </div>
       </div>
 
       <div class="db-layout">
@@ -404,23 +407,32 @@
           </form>
           <div class="db-summary" id="dbSummary"></div>
           <p class="hint" id="dbStatus"></p>
-          <div class="table-wrap full">
-            <table class="data-table" id="dbTable">
-              <thead>
-                <tr>
-                  <th>ФИО</th>
-                  <th>Работа</th>
-                  <th style="width:5rem">Объём</th>
-                  <th style="width:4rem">Ед.</th>
-                  <th style="width:5.5rem">Тариф</th>
-                  <th style="width:5.5rem">Сумма</th>
-                  <th style="width:4.5rem"></th>
-                </tr>
-              </thead>
-              <tbody id="dbBody">
-                <tr class="empty-row"><td colspan="7">Загрузка…</td></tr>
-              </tbody>
-            </table>
+          <div class="db-sheet" id="dbSheet">
+            <div class="db-tabs" id="dbTabs" role="tablist" hidden></div>
+            <div id="dbFoldersPanel">
+              <div class="db-folder-list" id="dbFolderList" aria-label="Папки отчётов">
+                <p class="db-folder-empty">Загрузка…</p>
+              </div>
+            </div>
+            <div id="dbTablePanel" hidden>
+              <p class="hint" id="dbSheetCaption"></p>
+              <div class="table-wrap full">
+                <table class="data-table" id="dbTable">
+                  <thead>
+                    <tr>
+                      <th>ФИО</th>
+                      <th>Работа</th>
+                      <th style="width:5rem">Объём</th>
+                      <th style="width:4rem">Ед.</th>
+                      <th style="width:5.5rem">Тариф</th>
+                      <th style="width:5.5rem">Сумма</th>
+                      <th style="width:4.5rem"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="dbBody"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -713,7 +725,8 @@
             <p>
               Вкладка <strong>«База»</strong> показывает отчёты, сохранённые кнопкой «Сохранить в БД».
               Это локальный архив в <code>data/reports.db</code>, не книга Excel.
-              Каждый отчёт — папка (дата и ФИО). Строки работ лежат внутри своей папки: ФИО, наименование, объём, единица, тариф и сумма.
+              Каждый отчёт — папка (дата и ФИО). На вкладке сразу видны только папки. Нажатие на папку открывает вспомогательную вкладку с таблицей работ: ФИО, наименование, объём, единица, тариф и сумма. Вкладку можно закрыть и вернуться к списку папок.
+              Кнопка <strong>«Скачать»</strong> открывает окно с выбором папок. Отмеченные отчёты выгружаются в Excel дневными листами — как «Скачать за период» в «Настройках»: без листов «Данные», «Расчет» и «Шаблон». Несколько отчётов одной даты попадают на один лист.
               Значок карандаша у папки правит дату и участок, у строки — ФИО, работу, объём, единицу и тариф. Сумма строки пересчитывается как объём × тариф.
               Значок корзины удаляет папку целиком или одну строку. Перед удалением программа спрашивает подтверждение.
             </p>
@@ -748,11 +761,11 @@
               <li><strong>Участок</strong> — «Все участки», конкретное название или «Без участка». То же делают кнопки в списке слева.</li>
               <li><strong>Дата с</strong> и <strong>дата по</strong> — по дате отчёта, включая оба края. Можно указать только одну границу.</li>
               <li><strong>ФИО</strong> — часть фамилии или имени. Регистр не важен; «петров» найдёт «Петров П.П.» и бригаду, где эта фамилия есть в строке ФИО.</li>
-              <li><strong>Показать</strong> применяет дату и ФИО. Смена участка в списке или в выпадающем списке обновляет таблицу сразу.</li>
+              <li><strong>Показать</strong> применяет дату и ФИО. Смена участка в списке или в выпадающем списке обновляет список папок сразу.</li>
               <li><strong>Сбросить</strong> снимает все фильтры. <strong>Обновить</strong> заново читает базу, не сбрасывая выбранный фильтр.</li>
             </ul>
             <p>
-              Над таблицей — сводка по текущему фильтру: число отчётов, строк, разных ФИО и сумма по показанным работам.
+              Над списком папок — сводка по текущему фильтру: число отчётов, строк, разных ФИО и сумма по показанным работам.
               Красная строка — работа не найдена в прайсе, в сумму она не входит.
             </p>
           </section>
@@ -842,6 +855,22 @@
     </section>
   </div>
 
+  <div id="dbExport" class="db-confirm" hidden>
+    <div class="db-confirm-card db-export-card" role="dialog" aria-modal="true" aria-labelledby="dbExportTitle">
+      <p id="dbExportTitle">Скачать отчёты в Excel</p>
+      <label class="db-export-all">
+        <input type="checkbox" id="dbExportAll" />
+        <span>Выбрать все</span>
+      </label>
+      <div class="db-export-list" id="dbExportList"></div>
+      <p class="hint" id="dbExportStatus"></p>
+      <div class="btn-row">
+        <button type="button" class="btn primary" id="dbExportYes">Скачать</button>
+        <button type="button" class="btn outline" id="dbExportNo">Отмена</button>
+      </div>
+    </div>
+  </div>
+
   <div id="dbConfirm" class="db-confirm" hidden>
     <div class="db-confirm-card" role="dialog" aria-modal="true" aria-labelledby="dbConfirmText">
       <p id="dbConfirmText"></p>
@@ -852,6 +881,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261118book"></script>
+  <script src="/static/app.js?v=20261123xlsx"></script>
 </body>
 </html>

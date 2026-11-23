@@ -12,6 +12,7 @@ from core.report_db import (
     create_site,
     init_db,
     list_sites,
+    load_reports_for_excel,
     query_db_rows,
     save_report,
     delete_report,
@@ -297,6 +298,16 @@ class ReportDbBrowserTests(unittest.TestCase):
         self.assertFalse(any(item["id"] == saved["id"] for item in query_db_rows()["reports"]))
         with self.assertRaises(ValueError):
             delete_report(saved["id"])
+
+    def test_load_reports_for_excel_requires_ids(self):
+        saved = save_report(REPORT)
+        loaded = load_reports_for_excel([saved["id"]])
+        self.assertEqual(loaded[0]["report_date"], "2026-06-15")
+        self.assertEqual(len(loaded[0]["workers"]), 2)
+        with self.assertRaises(ValueError):
+            load_reports_for_excel([])
+        with self.assertRaises(ValueError):
+            load_reports_for_excel([999999])
 
 
 if __name__ == "__main__":

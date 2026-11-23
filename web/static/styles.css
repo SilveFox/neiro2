@@ -845,10 +845,90 @@ textarea {
   max-height: calc(100vh - 340px);
 }
 
-.db-folder td {
+.db-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  margin: 4px 0 12px;
+}
+
+.db-tabs[hidden] { display: none; }
+
+.db-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 650;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  max-width: 18rem;
+}
+
+.db-tab.active {
+  color: var(--blue);
+  border-bottom-color: var(--blue);
+}
+
+.db-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-tab-close {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.db-tab-close:hover {
+  background: #e8eef8;
+  color: var(--ink);
+}
+
+.db-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 340px);
+  overflow: auto;
+}
+
+.db-folder-empty {
+  margin: 0;
+  color: var(--muted);
+  padding: 8px 2px;
+}
+
+.db-folder-card {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid #d5e0f2;
+  border-radius: 10px;
   background: #eef3fb;
-  padding: 0;
-  border-top: 2px solid #d5e0f2;
+}
+
+.db-folder-card .db-folder-bar {
+  width: 100%;
+}
+
+#dbTablePanel[hidden],
+#dbFoldersPanel[hidden] {
+  display: none;
 }
 
 .db-folder-btn {
@@ -897,14 +977,6 @@ textarea {
   font-size: 0.85rem;
   font-weight: 600;
   white-space: nowrap;
-}
-
-.db-folder-line td:first-child {
-  padding-left: 28px;
-}
-
-.db-folder.is-collapsed .db-folder-mark {
-  opacity: 0.45;
 }
 
 .db-folder-bar {
@@ -988,6 +1060,44 @@ textarea {
   margin: 0 0 16px;
   font-size: 1.05rem;
   font-weight: 650;
+}
+
+.db-export-card {
+  width: min(560px, 100%);
+}
+
+.db-export-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 650;
+}
+
+.db-export-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(320px, 50vh);
+  overflow: auto;
+  margin: 10px 0 8px;
+}
+
+.db-export-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.db-export-item input {
+  margin-top: 3px;
+}
+
+.db-export-item span {
+  min-width: 0;
 }
 
 .db-row-actions .btn,

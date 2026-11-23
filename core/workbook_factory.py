@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -800,5 +801,208 @@ def export_workbook_period(
         wb.save(dest)
     finally:
         wb.close()
+
+    return dest.resolve()
+
+
+def _priced_workers(rows: list[dict[str, Any]]):
+    """DB worker rows → the same blocks the day-sheet writer uses."""
+    from core.pricing import PricedJob, WorkerCalc
+
+    workers = []
+    for row in rows:
+        members = [
+            part.strip()
+            for part in str(row.get("members") or row.get("worker_name") or "").split(",")
+            if part.strip()
+        ]
+        if not members:
+            members = ["Без имени"]
+        jobs = []
+        unmatched = []
+        for job in row.get("jobs") or []:
+            price = job.get("unit_price")
+            amount = job.get("amount")
+            priced = PricedJob(
+                raw_task_name=str(job.get("task_name") or job.get("matched_name") or "Без названия"),
+                job_description=str(job.get("job_description") or job.get("task_name") or ""),
+                matched_name=(str(job["matched_name"]).strip() if job.get("matched_name") else None),
+                service_type=str(job.get("service_type") or "Общее"),
+                volume=float(job.get("volume") or 0),
+                unit=str(job.get("unit") or "шт"),
+                unit_price=None if price is None else float(price),
+                amount=None if amount is None else float(amount),
+                matched=bool(job.get("matched")),
+            )
+            jobs.append(priced)
+            if not priced.matched:
+                unmatched.append(priced)
+        if row.get("total") is None:
+            total = round(sum(float(job.amount or 0) for job in jobs), 2)
+        else:
+            total = float(row["total"])
+        if row.get("per_person") is None:
+            per_person = round(total / max(1, len(members)), 2)
+        else:
+            per_person = float(row["per_person"])
+        workers.append(
+            WorkerCalc(
+                raw_worker_name=str(row.get("worker_name") or ", ".join(members)),
+                members=members,
+                jobs=jobs,
+                total=total,
+                per_person=per_person,
+                unmatched=unmatched,
+            )
+        )
+    return workers
+
+
+def _sheet_for_day(wb: openpyxl.Workbook, title: str, report_day: date):
+    """Day sheet copied from «Шаблон», with work tables cleared — same as a new month book."""
+    if title in wb.sheetnames:
+        return wb[title]
+    if config.SHEET_TEMPLATE not in wb.sheetnames:
+        raise KeyError("В книге нет листа Шаблон")
+    sheet = wb.copy_worksheet(wb[config.SHEET_TEMPLATE])
+    sheet.title = title
+    _strip_work_tables(sheet)
+    sheet.cell(1, 2).value = report_day.strftime("%d.%m.%Y")
+    return sheet
+
+
+def export_db_reports_excel(reports: list[dict[str, Any]], dest: Path | None = None) -> Path:
+    """
+    Excel of selected database reports, laid out like «Скачать за период».
+
+    One day sheet per report date (worker blocks, ФИО / Наработка).
+    Sheets «Данные», «Расчет» and «Шаблон» are omitted.
+    Several reports on one date share a sheet. Dates in one month use sheet
+    names 05, 06, …; dates across months use 05.10 so days do not collide.
+    """
+    from core.excel_writer import (
+        _next_free_row,
+        _set_date,
+        _update_people_sum_column,
+        _write_worker_block,
+    )
+
+    if not reports:
+        raise ValueError("Выберите хотя бы один отчёт")
+    if not config.SOURCE_WORKBOOK.is_file():
+        raise FileNotFoundError(f"Нет исходного Excel: {config.SOURCE_WORKBOOK}")
+
+    parsed: list[tuple[date, dict[str, Any]]] = []
+    for report in reports:
+        raw_date = str(report.get("report_date") or "")[:10]
+        try:
+            report_day = date.fromisoformat(raw_date)
+        except ValueError as exc:
+            raise ValueError(f"У отчёта id={report.get('id')} нет корректной даты") from exc
+        parsed.append((report_day, report))
+
+    months = {(day.year, day.month) for day, _report in parsed}
+    single_month = len(months) == 1
+    by_sheet: dict[str, list[tuple[date, dict[str, Any]]]] = {}
+    for report_day, report in parsed:
+        if single_month:
+            title = f"{report_day.day:02d}"
+        else:
+            title = f"{report_day.day:02d}.{report_day.month:02d}"
+        by_sheet.setdefault(title, []).append((report_day, report))
+
+    roster: list[str] = []
+    for _day, report in parsed:
+        for worker in _priced_workers(report.get("workers") or []):
+            roster.extend(worker.members)
+
+    fd, copied_name = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    copied = Path(copied_name)
+    shutil.copy2(config.SOURCE_WORKBOOK, copied)
+    wb = openpyxl.load_workbook(copied)
+    try:
+        sanitize_workbook(wb)
+        if config.SHEET_TEMPLATE not in wb.sheetnames:
+            raise ValueError("В исходной книге нет листа «Шаблон»")
+        if single_month:
+            year, month = next(iter(months))
+            if config.SHEET_TEMPLATE in wb.sheetnames:
+                _reset_day_sheets(wb, year, month)
+            sync_workbook_roster(wb, roster)
+        else:
+            ordered: list[str] = []
+            seen: set[str] = set()
+            for name in _load_staff_names() + roster:
+                cleaned = _clean_person_name(name)
+                if not _is_person_name(cleaned):
+                    continue
+                key = cleaned.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                ordered.append(cleaned)
+            for title, items in by_sheet.items():
+                sheet = _sheet_for_day(wb, title, items[0][0])
+                _ensure_names_on_people_sheet(sheet, ordered)
+
+        for title, items in by_sheet.items():
+            created = title not in wb.sheetnames
+            sheet = _sheet_for_day(wb, title, items[0][0])
+            if created:
+                _ensure_names_on_people_sheet(sheet, _load_staff_names() + roster)
+            _set_date(sheet, items[0][0].isoformat())
+            for _day, report in items:
+                workers = _priced_workers(report.get("workers") or [])
+                if not workers:
+                    continue
+                per_person_totals: dict[str, float] = {}
+                cursor = _next_free_row(sheet)
+                for worker in workers:
+                    _start, end, _filled = _write_worker_block(sheet, cursor, worker)
+                    cursor = end + 2
+                    for member in worker.members:
+                        key = str(member).strip()
+                        if not key:
+                            continue
+                        per_person_totals[key] = per_person_totals.get(key, 0.0) + float(worker.per_person or 0)
+                _update_people_sum_column(sheet, per_person_totals)
+
+        keep = set(by_sheet)
+        for name in list(wb.sheetnames):
+            if name not in keep:
+                del wb[name]
+        ordered_titles = sorted(
+            keep,
+            key=lambda name: (
+                by_sheet[name][0][0],
+                name,
+            ),
+        )
+        for index, name in enumerate(ordered_titles):
+            current = wb.sheetnames.index(name)
+            if current != index:
+                wb.move_sheet(wb[name], offset=index - current)
+
+        if not wb.sheetnames:
+            raise ValueError("Не удалось сформировать листы отчётов")
+
+        if dest is None:
+            first = min(day for day, _report in parsed)
+            last = max(day for day, _report in parsed)
+            stamp = first.isoformat() if first == last else f"{first.isoformat()}_{last.isoformat()}"
+            fd_out, out_name = tempfile.mkstemp(prefix=f"otchety_{stamp}_", suffix=".xlsx")
+            os.close(fd_out)
+            dest = Path(out_name)
+        else:
+            dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(dest)
+    finally:
+        wb.close()
+        try:
+            copied.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     return dest.resolve()
